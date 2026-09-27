@@ -1,8 +1,14 @@
-import type {
-  DocumentPermission,
-  DocumentRole,
-  PermissionAction,
-} from "./permissions";
+// src/server/document-access.ts
+
+export type DocumentRole = "owner" | "editor" | "viewer";
+
+export type PermissionAction = "read" | "write";
+
+export type DocumentPermission = {
+  userId: string;
+  documentId: string;
+  role: DocumentRole;
+};
 
 export class DocumentAccessService {
   private permissions = new Map<
@@ -12,38 +18,30 @@ export class DocumentAccessService {
 
   grantPermission(
     documentId: string,
-    clientId: string,
+    userId: string,
     role: DocumentRole
   ): void {
-    let documentPermissions = this.permissions.get(
-      documentId
-    );
+    let documentPermissions = this.permissions.get(documentId);
 
     if (!documentPermissions) {
       documentPermissions = new Map();
-
-      this.permissions.set(
-        documentId,
-        documentPermissions
-      );
+      this.permissions.set(documentId, documentPermissions);
     }
 
-    documentPermissions.set(clientId, role);
+    documentPermissions.set(userId, role);
   }
 
   revokePermission(
     documentId: string,
-    clientId: string
+    userId: string
   ): void {
-    const documentPermissions = this.permissions.get(
-      documentId
-    );
+    const documentPermissions = this.permissions.get(documentId);
 
     if (!documentPermissions) {
       return;
     }
 
-    documentPermissions.delete(clientId);
+    documentPermissions.delete(userId);
 
     if (documentPermissions.size === 0) {
       this.permissions.delete(documentId);
@@ -52,24 +50,19 @@ export class DocumentAccessService {
 
   getRole(
     documentId: string,
-    clientId: string
+    userId: string
   ): DocumentRole | null {
     return (
-      this.permissions
-        .get(documentId)
-        ?.get(clientId) ?? null
+      this.permissions.get(documentId)?.get(userId) ?? null
     );
   }
 
   canAccess(
     documentId: string,
-    clientId: string,
+    userId: string,
     action: PermissionAction
   ): boolean {
-    const role = this.getRole(
-      documentId,
-      clientId
-    );
+    const role = this.getRole(documentId, userId);
 
     if (!role) {
       return false;

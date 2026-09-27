@@ -7,6 +7,11 @@ import type {
 } from "./type";
 import { VersionVector } from "./version-vector";
 
+export type RGAState = {
+    elements: Element[];
+    versionVector: Record<string, number>;
+};
+
 export class RGA {
     private elements = new Map<string, Element>();
 
@@ -123,6 +128,12 @@ export class RGA {
     }
 
     apply(operation: Operation): Operation | void {
+
+        this.versionVector.update(
+            operation.id.clientId,
+            operation.id.sequence
+        )
+
         if (operation.type === "insert") {
             const key = this.idToString(operation.element.id);
 
@@ -177,5 +188,44 @@ export class RGA {
         visit(null);
 
         return result.join("");
+    }
+
+    serialize(): RGAState {
+        const elements = [...this.elements.values()].map(
+            (element) => ({
+                ...element,
+                id: { ...element.id },
+                after: element.after
+                    ? { ...element.after }
+                    : null,
+            })
+        );
+
+        return {
+            elements,
+            versionVector: this.versionVector.toJSON(),
+        };
+    }
+
+    restore(state: RGAState): void {
+        this.elements.clear();
+        this.pendingOperations = [];
+        this.pendingDeletes.clear();
+
+        for (const element of state.elements) {
+            const key = this.idToString(element.id);
+
+            this.elements.set(key, {
+                ...element,
+                id: { ...element.id },
+                after: element.after
+                    ? { ...element.after }
+                    : null,
+            });
+        }
+
+        this.versionVector = VersionVector.fromJSON(
+            state.versionVector
+        );
     }
 }

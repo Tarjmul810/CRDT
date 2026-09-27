@@ -42,4 +42,20 @@ equals(other: VersionVector): boolean {
     other.lessThanOrEqual(this)
   );
 }
+
+toJSON(): Record<string, number> {
+    return Object.fromEntries(this.versions);
+}
+
+static fromJSON(
+    data: Record<string, number>
+): VersionVector {
+    const vector = new VersionVector();
+
+    for (const [clientId, sequence] of Object.entries(data)) {
+        vector.update(clientId, sequence);
+    }
+
+    return vector;
+}
 }

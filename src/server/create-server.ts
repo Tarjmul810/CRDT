@@ -10,64 +10,62 @@ import { ClientSession } from "./client-session";
 import {
   DocumentAccessService,
 } from "./document-access";
+import type { AuthService } from "./auth";
+import { InMemoryOperationStore } from "./memory-operation-store";
+import { InMemoryDocumentStore } from "./memory-document-store";
+import { VersionVector } from "../crdt/version-vector";
+import { getMissingOperations } from "../crdt/sync";
 
-export function createServer(port: number) {
-
-  const accessService = new DocumentAccessService();
+export function createServer(port: number, authService: AuthService, accessService = new DocumentAccessService()) {
 
   const wss = new WebSocketServer({
     port,
   });
 
-
-
   const rooms = new Map<string, Room>();
 
   const clientRooms = new Map<WebSocket, Room>();
 
+  const operationStore = new InMemoryOperationStore();
+  const documentStore = new InMemoryDocumentStore();
+
+  const authenticatedUsers = new Map<WebSocket, string>();
   const clientSessions = new Map<
     WebSocket,
     ClientSession
   >();
 
-  function getRoom(documentId: string): Room {
+  async function getRoom(documentId: string): Promise<Room> {
     let room = rooms.get(documentId);
 
     if (!room) {
       room = new Room(
         documentId,
-        new RGA("server")
+        new RGA("server"),
+        operationStore,
+        documentStore
       );
 
       rooms.set(documentId, room);
+
+      await room.restore();
     }
 
     return room;
   }
 
   wss.on("connection", (ws) => {
-    const session = new ClientSession();
 
-    clientSessions.set(ws, session);
+    ws.on("message", async (data) => {
 
-    accessService.grantPermission(
-      "identity-test-document",
-      session.clientId,
-      "owner"
-    );
-
-    ws.send(
-      JSON.stringify({
-        type: "connected",
-        clientId: session.clientId,
-      })
-    );
-
-    ws.on("message", (data) => {
       try {
-        const rawMessage: unknown = JSON.parse(
-          data.toString()
-        );
+
+        const rawMessage: any = JSON.parse(data.toString());
+
+        console.log("Parsed message:", rawMessage);
+
+        console.log("Received raw message:", rawMessage);
+        console.log("Is valid:", validateMessage(rawMessage));
 
         if (!validateMessage(rawMessage)) {
           ws.send(
@@ -76,12 +74,69 @@ export function createServer(port: number) {
               message: "Invalid message",
             })
           );
+          return;
+        }
+
+        // Authentication must happen before other operations
+        if (rawMessage.type === "authenticate") {
+          const user = authService.authenticate(rawMessage.token);
+
+          if (!user) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Authentication failed",
+              })
+            );
+
+            ws.close(1008, "Authentication failed");
+            return;
+          }
+
+          const existingSession = clientSessions.get(ws);
+
+          if (existingSession) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Already authenticated",
+              })
+            );
+            return;
+          }
+
+          const session = new ClientSession(user.userId);
+
+          authenticatedUsers.set(ws, user.userId);
+          clientSessions.set(ws, session);
+
+          ws.send(
+            JSON.stringify({
+              type: "authenticated",
+              userId: session.userId,
+              sessionId: session.sessionId,
+              clientId: session.clientId,
+            })
+          );
+
+          return;
+        }
+
+        // All other messages require authentication
+        const session = clientSessions.get(ws);
+
+        if (!session) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "Authentication required",
+            })
+          );
 
           return;
         }
 
         if (rawMessage.type === "join") {
-          const session = clientSessions.get(ws);
 
           if (!session) {
             return;
@@ -90,7 +145,7 @@ export function createServer(port: number) {
           const hasReadAccess =
             accessService.canAccess(
               rawMessage.documentId,
-              session.clientId,
+              session.userId,
               "read"
             );
 
@@ -118,7 +173,7 @@ export function createServer(port: number) {
             return;
           }
 
-          const room = getRoom(
+          const room = await getRoom(
             rawMessage.documentId
           );
 
@@ -135,9 +190,42 @@ export function createServer(port: number) {
           return;
         }
 
+        if (rawMessage.type === "sync") {
+          const room = clientRooms.get(ws);
+
+          if (!room) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Join a document first",
+              }),
+            );
+            return;
+          }
+
+          const localVector = VersionVector.fromJSON(
+            rawMessage.versionVector,
+          );
+
+          const allOperations = await room.getOperations();
+
+          const missingOperations = getMissingOperations(
+            localVector,
+            allOperations,
+          );
+
+          ws.send(
+            JSON.stringify({
+              type: "sync",
+              operations: missingOperations,
+            }),
+          );
+
+          return;
+        }
+
         if (rawMessage.type === "operation") {
           const room = clientRooms.get(ws);
-          const session = clientSessions.get(ws);
 
           if (!room || !session) {
             ws.send(
@@ -153,7 +241,7 @@ export function createServer(port: number) {
           const hasWriteAccess =
             accessService.canAccess(
               room.documentId,
-              session.clientId,
+              session.userId,
               "write"
             );
 
@@ -184,10 +272,18 @@ export function createServer(port: number) {
             return;
           }
 
-          room.handleOperation(
+          await room.handleOperation(
             rawMessage.operation,
             ws
           );
+
+          ws.send(
+            JSON.stringify({
+              type: "operation_ack",
+              operationId: rawMessage.operation.id,
+            }),
+          );
+          return
         }
       } catch {
         ws.send(
@@ -207,6 +303,7 @@ export function createServer(port: number) {
       }
 
       clientRooms.delete(ws);
+      authenticatedUsers.delete(ws);
       clientSessions.delete(ws);
     });
   });

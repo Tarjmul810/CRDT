@@ -52,6 +52,39 @@ describe("validateMessage", () => {
     };
 
     expect(validateMessage(message)).toBe(true);
+    expect(
+  validateMessage({
+    type: "sync",
+    versionVector: {
+      "client-a": -1,
+    },
+  }),
+).toBe(false);
+
+expect(
+  validateMessage({
+    type: "sync",
+    versionVector: {
+      "client-a": 1.5,
+    },
+  }),
+).toBe(false);
+
+expect(
+  validateMessage({
+    type: "sync",
+    versionVector: {
+      "client-a": "5",
+    },
+  }),
+).toBe(false);
+
+expect(
+  validateMessage({
+    type: "sync",
+    versionVector: null,
+  }),
+).toBe(false);
   });
 
   it("rejects an unknown message type", () => {
@@ -59,6 +92,16 @@ describe("validateMessage", () => {
       type: "something-else",
       documentId: "doc-123",
     };
+
+    expect(
+  validateMessage({
+    type: "sync",
+    versionVector: {
+      "client-a": 5,
+      "client-b": 12,
+    },
+  }),
+).toBe(true);
 
     expect(validateMessage(message)).toBe(false);
   });

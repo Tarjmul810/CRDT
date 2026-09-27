@@ -108,24 +108,58 @@ function isValidOperation(
   return false;
 }
 
-export function validateMessage(
-  message: unknown
-): message is ClientMessage {
-  if (typeof message !== "object" || message === null) {
+function isValidVersionVector(value: unknown): boolean {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value)
+  ) {
     return false;
   }
 
-  const data = message as Record<string, unknown>;
+  const vector = value as Record<string, unknown>;
 
-  if (data.type === "join") {
+  for (const [clientId, sequence] of Object.entries(vector)) {
+    if (clientId.length === 0) {
+      return false;
+    }
+
+    if (!Number.isInteger(sequence) || Number(sequence) < 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function validateMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+
+  const msg = message as Record<string, unknown>;
+
+  if (msg.type === "authenticate") {
     return (
-      typeof data.documentId === "string" &&
-      data.documentId.length > 0
+      typeof msg.token === "string" &&
+      msg.token.length > 0
     );
   }
 
-  if (data.type === "operation") {
-    return isValidOperation(data.operation);
+  if (msg.type === "join") {
+    return (
+      typeof msg.documentId === "string" &&
+      msg.documentId.length > 0
+    );
+  }
+
+  if (msg.type === "operation") {
+    return isValidOperation(msg.operation);
+  }
+
+  if (msg.type === "sync") {
+    return isValidVersionVector(msg.versionVector);
+
   }
 
   return false;

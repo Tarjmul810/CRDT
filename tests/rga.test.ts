@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { RGA } from "../src/crdt/rga";
+import { InMemoryOperationStore } from "../src/server/memory-operation-store";
+import { InMemoryDocumentStore } from "../src/server/memory-document-store";
+import { Room } from "../src/server/room";
+import type WebSocket from "ws";
 
 const insertOperation = (id: string, value: string, after: string | null) => ({
   type: "insert" as const,
@@ -185,4 +189,196 @@ it("handles delete arriving before the element", () => {
   bob.apply(b);
 
   expect(bob.getText()).toBe("A");
+});
+
+it("can serialize and restore its state", () => {
+    const original = new RGA("client-1");
+
+    original.insert("H", null);
+
+    const hId = {
+        clientId: "client-1",
+        sequence: 1,
+    };
+
+    original.insert("i", hId);
+
+    const state = original.serialize();
+
+    const restored = new RGA("restored-client");
+
+    restored.restore(state);
+
+    expect(restored.getText()).toBe("Hi");
+});
+
+it("preserves deleted elements during restore", () => {
+    const original = new RGA("client-1");
+
+    original.insert("H", null);
+
+    const hId = {
+        clientId: "client-1",
+        sequence: 1,
+    };
+
+    original.insert("i", hId);
+
+    original.delete(hId);
+
+    const state = original.serialize();
+
+    const restored = new RGA("restored-client");
+
+    restored.restore(state);
+
+    expect(restored.getText()).toBe("i");
+});
+
+it("advances the version vector when applying a remote operation", () => {
+  const rga = new RGA("client-b");
+
+  const operation = {
+    type: "insert" as const,
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    element: {
+      id: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      value: "H",
+      after: null,
+      deleted: false,
+    },
+  };
+
+  rga.apply(operation);
+
+  console.log("elements", rga.serialize().versionVector)
+
+  expect(rga.serialize().versionVector).toEqual({
+    "client-a": 1,
+  });
+});
+
+it("advances the version vector when applying a remote delete", () => {
+  const rga = new RGA("client-b");
+
+  const insert = {
+    type: "insert" as const,
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    element: {
+      id: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      value: "H",
+      after: null,
+      deleted: false,
+    },
+  };
+
+  rga.apply(insert);
+
+  const deleteOperation = {
+    type: "delete" as const,
+    id: {
+      clientId: "client-a",
+      sequence: 2,
+    },
+    target: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+  };
+
+  rga.apply(deleteOperation);
+
+  expect(rga.serialize().versionVector).toEqual({
+    "client-a": 2,
+  });
+
+  
+});
+
+it("restores the version vector from a snapshot and later operations", async () => {
+  const operationStore = new InMemoryOperationStore();
+  const documentStore = new InMemoryDocumentStore();
+
+  const firstRoom = new Room(
+    "version-vector-doc",
+    new RGA("server"),
+    operationStore,
+    documentStore,
+  );
+
+  const sender = {} as WebSocket;
+
+  const operation1 = {
+    type: "insert" as const,
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    element: {
+      id: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      value: "H",
+      after: null,
+      deleted: false,
+    },
+  };
+
+  const operation2 = {
+    type: "insert" as const,
+    id: {
+      clientId: "client-a",
+      sequence: 2,
+    },
+    element: {
+      id: {
+        clientId: "client-a",
+        sequence: 2,
+      },
+      value: "i",
+      after: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      deleted: false,
+    },
+  };
+
+  await firstRoom.handleOperation(operation1, sender);
+  await firstRoom.handleOperation(operation2, sender);
+
+  const snapshot = firstRoom["rga"].serialize();
+
+  await documentStore.saveSnapshot({
+    documentId: "version-vector-doc",
+    state: snapshot,
+    version: 1,
+  });
+
+  const restoredRoom = new Room(
+    "version-vector-doc",
+    new RGA("server"),
+    operationStore,
+    documentStore,
+  );
+
+  await restoredRoom.restore();
+
+  expect(restoredRoom.getText()).toBe("Hi");
+  expect(restoredRoom.getVersionVector()).toEqual({
+  "client-a": 2,
+});
 });
