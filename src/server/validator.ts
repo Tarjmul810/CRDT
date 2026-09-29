@@ -140,11 +140,19 @@ export function validateMessage(message: unknown): boolean {
   const msg = message as Record<string, unknown>;
 
   if (msg.type === "authenticate") {
-    return (
-      typeof msg.token === "string" &&
-      msg.token.length > 0
-    );
+  if (typeof msg.token !== "string") {
+    return false;
   }
+
+  if (
+    msg.clientId !== undefined &&
+    typeof msg.clientId !== "string"
+  ) {
+    return false;
+  }
+
+  return true;
+}
 
   if (msg.type === "join") {
     return (

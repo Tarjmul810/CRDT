@@ -3,6 +3,7 @@ import type { Operation } from "../crdt/type";
 export type AuthMessage = {
   type: "authenticate";
   token: string;
+  clientId?: string;
 };
 
 export type JoinMessage = {

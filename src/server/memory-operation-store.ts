@@ -91,4 +91,24 @@ export class InMemoryOperationStore
         operation: item.operation,
       }));
   }
+
+  async getOperation(
+    documentId: string,
+    operationId: {
+      clientId: string;
+      sequence: number;
+    },
+  ): Promise<StoredOperation | null> {
+    const documentOperationVersions =
+      this.operationVersions.get(documentId);
+
+    if (!documentOperationVersions) {
+      return null;
+    }
+
+    const operationKey =
+      `${operationId.clientId}:${operationId.sequence}`;
+
+    return documentOperationVersions.get(operationKey) ?? null;
+  }
 }

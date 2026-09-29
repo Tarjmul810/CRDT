@@ -2,10 +2,12 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 
 import WebSocket from "ws";
 
+import type { Operation } from "../src/crdt/type";
 import { RGA } from "../src/crdt/rga";
 import { Room } from "../src/server/room";
 import { InMemoryOperationStore } from "../src/server/memory-operation-store";
@@ -239,5 +241,65 @@ it("restores only operations after the snapshot version", async () => {
   expect(
     operations[0]?.operation
   ).toEqual(operation101);
+});
+
+it("does not apply or broadcast a duplicate operation", async () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore =
+    new InMemoryDocumentStore();
+
+  const rga = new RGA("server");
+
+  const room = new Room(
+    "duplicate-doc",
+    rga,
+    operationStore,
+    documentStore,
+  );
+
+  const sender = {
+    readyState: WebSocket.OPEN,
+  } as WebSocket;
+
+  const receiver = {
+    readyState: WebSocket.OPEN,
+    send: vi.fn(),
+  } as unknown as WebSocket;
+
+  room.addClient(sender);
+  room.addClient(receiver);
+
+  const operation: Operation = {
+    type: "insert",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    element: {
+      id: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      value: "H",
+      after: null,
+      deleted: false,
+    },
+  };
+
+  await room.handleOperation(
+    operation,
+    sender,
+  );
+
+  await room.handleOperation(
+    operation,
+    sender,
+  );
+
+  expect(room.getText()).toBe("H");
+
+  expect(receiver.send).toHaveBeenCalledTimes(1);
 });
 });

@@ -9,10 +9,9 @@ export class ClientSession {
 
   constructor(
     public readonly userId: string,
-    sessionId?: string,
     clientId?: string
   ) {
-    this.sessionId = sessionId ?? randomUUID();
+    this.sessionId = randomUUID();
     this.clientId = clientId ?? randomUUID();
   }
 

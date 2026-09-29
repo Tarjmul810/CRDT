@@ -62,11 +62,6 @@ export function createServer(port: number, authService: AuthService, accessServi
 
         const rawMessage: any = JSON.parse(data.toString());
 
-        console.log("Parsed message:", rawMessage);
-
-        console.log("Received raw message:", rawMessage);
-        console.log("Is valid:", validateMessage(rawMessage));
-
         if (!validateMessage(rawMessage)) {
           ws.send(
             JSON.stringify({
@@ -105,7 +100,7 @@ export function createServer(port: number, authService: AuthService, accessServi
             return;
           }
 
-          const session = new ClientSession(user.userId);
+          const session = new ClientSession(user.userId, rawMessage.clientId);
 
           authenticatedUsers.set(ws, user.userId);
           clientSessions.set(ws, session);
@@ -227,6 +222,7 @@ export function createServer(port: number, authService: AuthService, accessServi
         if (rawMessage.type === "operation") {
           const room = clientRooms.get(ws);
 
+
           if (!room || !session) {
             ws.send(
               JSON.stringify({
@@ -256,10 +252,40 @@ export function createServer(port: number, authService: AuthService, accessServi
             return;
           }
 
+          const operation = rawMessage.operation
+
+          // 1. Verify the operation belongs to this client.
+          if (operation.id.clientId !== session.clientId) {
+            ws.send(JSON.stringify({
+              type: "error",
+              message: "Invalid operation identity",
+            }));
+            return;
+          }
+
+          // 2. Check whether this exact operation was already persisted.
+          const existingOperation =
+            await operationStore.getOperation(
+              room.documentId,
+              operation.id,
+            );
+
+          if (existingOperation) {
+            // It is a retransmission.
+            ws.send(JSON.stringify({
+              type: "operation_ack",
+              operationId: operation.id,
+            }));
+
+            return;
+          }
+
           const isValidIdentity =
             session.validateOperationIdentity(
               rawMessage.operation
             );
+
+          console.log("isValidIdentity", isValidIdentity);
 
           if (!isValidIdentity) {
             ws.send(

@@ -9,11 +9,12 @@ import { ClientSession } from "../src/server/client-session";
 import {
   createInsertOperation,
 } from "./helpers/operations";
+import { randomUUID } from "crypto";
 
 describe("ClientSession", () => {
   it("generates a unique client ID", () => {
-    const firstSession = new ClientSession();
-    const secondSession = new ClientSession();
+    const firstSession = new ClientSession(randomUUID());
+    const secondSession = new ClientSession(randomUUID());
 
     expect(firstSession.clientId).toBeTypeOf("string");
     expect(secondSession.clientId).toBeTypeOf("string");
@@ -24,7 +25,7 @@ describe("ClientSession", () => {
   });
 
   it("accepts an operation with its own client ID", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const operation = createInsertOperation(
       session.clientId,
@@ -37,7 +38,7 @@ describe("ClientSession", () => {
   });
 
   it("rejects an operation belonging to another client", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const operation = createInsertOperation(
       "another-client",
@@ -50,7 +51,7 @@ describe("ClientSession", () => {
   });
 
   it("rejects a repeated sequence number", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const firstOperation = createInsertOperation(
       session.clientId,
@@ -72,7 +73,7 @@ describe("ClientSession", () => {
   });
 
   it("rejects an older sequence number", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const firstOperation = createInsertOperation(
       session.clientId,
@@ -94,7 +95,7 @@ describe("ClientSession", () => {
   });
 
   it("rejects zero and negative sequences", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const zeroOperation = createInsertOperation(
       session.clientId,
@@ -116,7 +117,7 @@ describe("ClientSession", () => {
   });
 
   it("updates the last accepted sequence", () => {
-    const session = new ClientSession();
+    const session = new ClientSession(randomUUID());
 
     const firstOperation = createInsertOperation(
       session.clientId,

@@ -163,9 +163,15 @@ accessService.grantPermission(
 );
 
 accessService.grantPermission(
-  "shared-doc",
+  "sync-doc",
   "editor",
   "editor"
+);
+
+accessService.grantPermission(
+  "sync-doc",
+  "owner",
+  "owner"
 );
 
 accessService.grantPermission(
@@ -173,6 +179,24 @@ accessService.grantPermission(
   "viewer",
   "viewer"
 );
+
+accessService.grantPermission(
+  "shared-doc",
+  "editor",
+  "editor"
+);
+
+accessService.grantPermission(
+  "shared-doc",
+  "owner",
+  "owner"
+)
+
+accessService.grantPermission(
+  "partial-sync-doc",
+  "editor",
+  "editor"
+)
 
   server = createServer(0, authService, accessService);
 
@@ -383,14 +407,11 @@ it("allows a viewer to receive operations from a writer", async () => {
     "shared-doc"
   );
 
-  console.log("writerJoin", writerJoin);
-
   const viewerJoin = await join(
     viewerSocket,
     "shared-doc"
   );
 
-  console.log("viewerJoin", viewerJoin);
 
   expect(writerJoin.type).toBe("joined");
   expect(viewerJoin.type).toBe("joined");
@@ -559,8 +580,10 @@ it("syncs missing operations to a client", async () => {
   const receiver = await connect();
 
   try {
-    await authenticate(sender, "user-1-token");
-    await authenticate(receiver, "user-1-token");
+    const senderAuth = await authenticate(sender, "editor-token");
+    const receiverAuth = await authenticate(receiver, "editor-token");
+
+    const liveMessagePromise3 = nextMessage(sender);
 
     sender.send(
       JSON.stringify({
@@ -569,7 +592,13 @@ it("syncs missing operations to a client", async () => {
       }),
     );
 
-    await nextMessage(sender);
+    const liveMessage1 = await liveMessagePromise3;
+
+    expect(liveMessage1.type).toBe("joined");
+
+    console.log("receiver joined");
+
+    const liveMessagePromise4 = nextMessage(receiver);
 
     receiver.send(
       JSON.stringify({
@@ -578,17 +607,21 @@ it("syncs missing operations to a client", async () => {
       }),
     );
 
-    await nextMessage(receiver);
+    await liveMessagePromise4;
+
+    
+
+    const liveMessagePromise = nextMessage(receiver);
 
     const operation = {
       type: "insert",
       id: {
-        clientId: "client-a",
+        clientId: senderAuth.clientId,
         sequence: 1,
       },
       element: {
         id: {
-          clientId: "client-a",
+          clientId: senderAuth.clientId,
           sequence: 1,
         },
         value: "H",
@@ -606,10 +639,12 @@ it("syncs missing operations to a client", async () => {
 
     // Sender does not receive its own broadcast.
     // Receiver receives the live operation.
-    const liveMessage = await nextMessage(receiver);
+    const liveMessage = await liveMessagePromise;
 
     expect(liveMessage.type).toBe("operation");
     expect(liveMessage.operation).toEqual(operation);
+    
+    const liveMessagePromise2 = nextMessage(receiver);
 
     // Now ask for synchronization from an empty vector.
     receiver.send(
@@ -619,7 +654,7 @@ it("syncs missing operations to a client", async () => {
       }),
     );
 
-    const syncMessage = await nextMessage(receiver);
+    const syncMessage = await liveMessagePromise2;
 
     expect(syncMessage.type).toBe("sync");
     expect(syncMessage.operations).toEqual([operation]);
@@ -634,8 +669,8 @@ it("only syncs operations missing from the client's version vector", async () =>
   const receiver = await connect();
 
   try {
-    await authenticate(sender, "user-1-token");
-    await authenticate(receiver, "user-1-token");
+    const senderAuth = await authenticate(sender, "editor-token");
+    const receiverAuth = await authenticate(receiver, "editor-token");
 
     sender.send(
       JSON.stringify({
@@ -656,12 +691,12 @@ it("only syncs operations missing from the client's version vector", async () =>
     const operation1 = {
       type: "insert",
       id: {
-        clientId: "client-a",
+        clientId: senderAuth.clientId,
         sequence: 1,
       },
       element: {
         id: {
-          clientId: "client-a",
+          clientId: senderAuth.clientId,
           sequence: 1,
         },
         value: "H",
@@ -673,17 +708,17 @@ it("only syncs operations missing from the client's version vector", async () =>
     const operation2 = {
       type: "insert",
       id: {
-        clientId: "client-a",
+        clientId: senderAuth.clientId,
         sequence: 2,
       },
       element: {
         id: {
-          clientId: "client-a",
+          clientId: senderAuth.clientId,
           sequence: 2,
         },
         value: "i",
         after: {
-          clientId: "client-a",
+          clientId: senderAuth.clientId,
           sequence: 1,
         },
         deleted: false,
@@ -713,7 +748,7 @@ it("only syncs operations missing from the client's version vector", async () =>
       JSON.stringify({
         type: "sync",
         versionVector: {
-          "client-a": 1,
+          [senderAuth.clientId]: 1,
         },
       }),
     );

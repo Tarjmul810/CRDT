@@ -15,4 +15,12 @@ export interface OperationStore {
         documentId: string,
         afterVersion?: number
     ): Promise<StoredOperation[]>;
+
+    getOperation(
+    documentId: string,
+    operationId: {
+      clientId: string;
+      sequence: number;
+    },
+  ): Promise<StoredOperation | null>;
 }

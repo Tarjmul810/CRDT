@@ -69,6 +69,7 @@ function nextMessage(socket: WebSocket): Promise<any> {
 async function authenticate(
   socket: WebSocket,
   token: string,
+  clientId?: string,
 ) {
   const response = nextMessage(socket);
 
@@ -76,6 +77,7 @@ async function authenticate(
     JSON.stringify({
       type: "authenticate",
       token,
+      ...(clientId ? { clientId } : {}),
     }),
   );
 
@@ -174,6 +176,12 @@ beforeAll(async () => {
     "user-1",
     "editor",
   );
+
+  accessService.grantPermission(
+  "partial-sync-doc",
+  "user-1",
+  "editor"
+);
 
   accessService.grantPermission(
     "retry-doc",
@@ -396,12 +404,12 @@ describe("WebSocket synchronization", () => {
 
       await joinDocument(
         sender,
-        "sync-doc",
+        "partial-sync-doc",
       );
 
       await joinDocument(
         receiver,
-        "sync-doc",
+        "partial-sync-doc",
       );
 
       const operation1 = createInsertOperation(
@@ -415,7 +423,7 @@ describe("WebSocket synchronization", () => {
         2,
         "i",
         {
-          clientId: "client-a",
+          clientId: senderAuth.clientId,
           sequence: 1,
         },
       );
@@ -454,11 +462,9 @@ describe("WebSocket synchronization", () => {
       const syncMessage = await requestSync(
         receiver,
         {
-          "client-a": 1,
+          [senderAuth.clientId]: 1,
         },
       );
-
-      
 
       expect(syncMessage).toEqual({
         type: "sync",
@@ -474,7 +480,7 @@ describe("WebSocket synchronization", () => {
     const socket = await connect();
 
     try {
-      await authenticate(
+      const auth = await authenticate(
         socket,
         "user-1-token",
       );
@@ -491,7 +497,7 @@ describe("WebSocket synchronization", () => {
       });
 
       const operation = createInsertOperation(
-        "client-a",
+        auth.clientId,
         1,
         "H",
       );
@@ -515,6 +521,8 @@ describe("WebSocket synchronization", () => {
           operation,
         );
 
+        console.log("secondAck", secondAck);
+
       expect(secondAck).toEqual({
         type: "operation_ack",
         operationId: operation.id,
@@ -534,5 +542,6 @@ describe("WebSocket synchronization", () => {
       socket.close();
     }
   });
+
 });
 

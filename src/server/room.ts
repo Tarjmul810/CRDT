@@ -57,7 +57,17 @@ export class Room {
   async handleOperation(
     operation: Operation,
     sender: WebSocket
-  ): Promise<void> {
+  ): Promise<boolean> {
+
+    const existingOperation =
+    await this.operationStore.getOperation(
+      this.documentId,
+      operation.id,
+    ) 
+
+  if (existingOperation) {
+    return false
+  }
     this.rga.apply(operation);
 
     const storedOperation = await this.operationStore.append(
@@ -75,6 +85,8 @@ export class Room {
       operation,
       sender
     );
+
+    return true
   }
 
   async getOperations(): Promise<Operation[]> {

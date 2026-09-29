@@ -3,10 +3,15 @@ import { Room } from "./room";
 import { RGA } from "../crdt/rga";
 import { validateMessage } from "./validator";
 import { ClientSession } from "./client-session";
+import { InMemoryOperationStore } from "./memory-operation-store";
+import { InMemoryDocumentStore } from "./memory-document-store";
 
 const rooms = new Map<string, Room>();
 const clientRooms = new Map<WebSocket, Room>();
 const clientSessions = new Map<WebSocket, ClientSession>();
+
+const operationStore = new InMemoryOperationStore();
+const documentStore = new InMemoryDocumentStore();
 
 function getRoom(documentId: string): Room {
     let room = rooms.get(documentId);
@@ -14,7 +19,9 @@ function getRoom(documentId: string): Room {
     if (!room) {
         room = new Room(
             documentId,
-            new RGA("server")
+            new RGA("server"), 
+            operationStore,
+            documentStore
         );
 
         rooms.set(documentId, room);
@@ -30,7 +37,7 @@ const wss = new WebSocketServer({
 wss.on("connection", (socket: WebSocket) => {
     console.log("Client connected");
 
-    const session = new ClientSession();
+    const session = new ClientSession(crypto.randomUUID());
 
     clientSessions.set(socket, session);
 
@@ -43,7 +50,7 @@ wss.on("connection", (socket: WebSocket) => {
 
     socket.on("message", (data) => {
         try {
-            const message: unknown = JSON.parse(data.toString());
+            const message = JSON.parse(data.toString());
 
             if (!validateMessage(message)) {
                 socket.send(

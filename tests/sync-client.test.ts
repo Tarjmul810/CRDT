@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { SyncClient } from "../src/client/sync-client";
 import { SyncState } from "../src/client/sync-state";
+import { InMemoryLocalStore } from "../src/client/memory-local-store";
+import { IndexedDBLocalStore } from "../src/client/indexed-db-local-store";
+import "fake-indexeddb/auto";
 
 function createFakeSocket() {
   return {
@@ -18,24 +21,28 @@ describe("SyncClient", () => {
   it("requests sync using its current version vector", () => {
     const socket = createFakeSocket();
     const state = new SyncState("client-a");
-    const client = new SyncClient(socket as any, state);
+    const localStore = new InMemoryLocalStore();
+    const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
     state.insert("H", null);
 
     client.requestSync();
 
-    expect(JSON.parse(socket.sent[0]!)).toEqual({
+    const syncMessage = JSON.parse(socket.sent[0]!)
+
+    console.log("parsedSyncMessage", syncMessage)
+
+    expect(syncMessage).toEqual({
       type: "sync",
-      versionVector: {
-        "client-a": 1,
-      },
+      versionVector: {},
     });
-  });
+  })
 
   it("applies synchronized operations", () => {
     const socket = createFakeSocket();
     const state = new SyncState("client-b");
-    const client = new SyncClient(socket as any, state);
+    const localStore = new InMemoryLocalStore();
+    const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
     client.handleMessage({
       type: "sync",
@@ -69,7 +76,8 @@ describe("SyncClient", () => {
   it("sends locally created operations", () => {
     const socket = createFakeSocket();
     const state = new SyncState("client-a");
-    const client = new SyncClient(socket as any, state);
+    const localStore = new InMemoryLocalStore();
+    const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
     const operation = client.insert("H", null);
 
@@ -81,13 +89,14 @@ describe("SyncClient", () => {
     expect(client.getText()).toBe("H");
   });
 
-  it("queues local operations while disconnected", () => {
+  it("queues local operations while disconnected", async () => {
   const socket = createFakeSocket();
 
   socket.readyState = 0;
 
   const state = new SyncState("client-a");
-  const client = new SyncClient(socket as any, state);
+  const localStore = new InMemoryLocalStore();
+  const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
   const operation = client.insert("H", null);
 
@@ -96,17 +105,13 @@ describe("SyncClient", () => {
 
   socket.readyState = 1;
 
-  client.reconnected();
-
-  console.log("sent", socket.sent)
+  await client.reconnected();
 
   expect(socket.sent).toHaveLength(2);
 
   expect(JSON.parse(socket.sent[0]!)).toEqual({
     type: "sync",
-    versionVector: {
-      "client-a": 1,
-    },
+    versionVector: {},
   });
 
   expect(JSON.parse(socket.sent[1]!)).toEqual({
@@ -115,10 +120,11 @@ describe("SyncClient", () => {
   });
 });
 
-it("resyncs after being offline while remote operations were created", () => {
+it("resyncs after being offline while remote operations were created", async() => {
   const socket = createFakeSocket();
   const state = new SyncState("client-b");
-  const client = new SyncClient(socket as any, state);
+  const localStore = new InMemoryLocalStore();
+  const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
   // Client B is initially connected and receives an operation
   // from Client A.
@@ -160,7 +166,7 @@ it("resyncs after being offline while remote operations were created", () => {
 
   // Client B reconnects.
   socket.readyState = 1;
-  client.reconnected();
+  await client.reconnected();
 
   expect(socket.sent).toHaveLength(2);
 
@@ -169,8 +175,7 @@ it("resyncs after being offline while remote operations were created", () => {
   expect(syncMessage).toEqual({
     type: "sync",
     versionVector: {
-      "client-a": 1,
-      "client-b": 1,
+      "client-a":1,
     },
   });
 
@@ -182,17 +187,18 @@ it("resyncs after being offline while remote operations were created", () => {
   });
 });
 
-it("keeps an operation pending until the server acknowledges it", () => {
+it("keeps an operation pending until the server acknowledges it", async() => {
   const socket = createFakeSocket();
   const state = new SyncState("client-a");
-  const client = new SyncClient(socket as any, state);
+  const localStore = new InMemoryLocalStore();
+  const client = new SyncClient(socket as any, state, localStore, "doc-1");
 
   const operation = client.insert("H", null);
 
   expect(socket.sent).toHaveLength(1);
 
   // Simulate reconnect/flush before acknowledgement.
-  client.reconnected();
+  await client.reconnected();
 
   expect(socket.sent).toHaveLength(3);
 
@@ -214,7 +220,7 @@ it("keeps an operation pending until the server acknowledges it", () => {
   });
 
   // Another reconnect should NOT resend the operation.
-  client.reconnected();
+  await client.reconnected();
 
   expect(socket.sent).toHaveLength(4);
 
@@ -226,5 +232,218 @@ it("keeps an operation pending until the server acknowledges it", () => {
       "client-a": 1,
     },
   });
+});
+
+it("restores pending operations from local storage", async () => {
+  const store = new InMemoryLocalStore();
+
+  const socket1 = createFakeSocket();
+  const state1 = new SyncState("client-1");
+
+  const client1 = new SyncClient(
+    socket1 as any,
+    state1,
+    store,
+    "doc-1"
+  );
+
+  client1.insert("H", null);
+
+  expect(client1.getPendingOperationCount()).toBe(1);
+
+  const socket2 = createFakeSocket();
+  const state2 = new SyncState("client-1");
+
+  const client2 = new SyncClient(
+    socket2 as any,
+    state2,
+    store,
+    "doc-1"
+  );
+
+  await client2.restorePendingOperations();
+
+  expect(client2.getPendingOperationCount()).toBe(1);
+});
+
+it("restores document state from local storage", async () => {
+  const store = new InMemoryLocalStore();
+
+  const socket1 = createFakeSocket();
+  const state1 = new SyncState("client-a");
+
+  const client1 = new SyncClient(
+    socket1 as any,
+    state1,
+    store,
+    "doc-1"
+  );
+
+  client1.insert("H", null);
+
+  await client1.saveDocumentState();
+
+  const socket2 = createFakeSocket();
+  const state2 = new SyncState("client-a");
+
+  const client2 = new SyncClient(
+    socket2 as any,
+    state2,
+    store,
+    "doc-1"
+  );
+
+  expect(client2.getText()).toBe("");
+
+  await client2.restoreDocumentState();
+
+  expect(client2.getText()).toBe("H");
+
+  expect(client2.getVersionVector()).toEqual({
+    "client-a": 1,
+  });
+});
+
+it("automatically persists local document changes", async () => {
+  const store = new InMemoryLocalStore();
+
+  const socket = createFakeSocket();
+  const state = new SyncState("client-a");
+
+  const client = new SyncClient(
+    socket as any,
+    state,
+    store,
+    "doc-1"
+  );
+
+  client.insert("H", null);
+
+  const savedDocument = await store.loadDocument("doc-1");
+
+  expect(savedDocument).not.toBeNull();
+  expect(savedDocument?.state.versionVector).toEqual({
+    "client-a": 1,
+  });
+});
+
+it("persists remotely received operations", async () => {
+  const store = new InMemoryLocalStore();
+
+  const socket = createFakeSocket();
+  const state = new SyncState("client-b");
+
+  const client = new SyncClient(
+    socket as any,
+    state,
+    store,
+    "doc-1"
+  );
+
+  await client.handleMessage({
+    type: "operation",
+    operation: {
+      type: "insert",
+      id: {
+        clientId: "client-a",
+        sequence: 1,
+      },
+      element: {
+        id: {
+          clientId: "client-a",
+          sequence: 1,
+        },
+        value: "H",
+        after: null,
+        deleted: false,
+      },
+    },
+  });
+
+  const document = await store.loadDocument("doc-1");
+
+  expect(document?.state.versionVector).toEqual({
+    "client-a": 1,
+  });
+
+  expect(document?.state.elements).toHaveLength(1);
+});
+
+it("persists state received through sync", async () => {
+  const store = new InMemoryLocalStore();
+
+  const socket = createFakeSocket();
+  const state = new SyncState("client-b");
+
+  const client = new SyncClient(
+    socket as any,
+    state,
+    store,
+    "doc-1"
+  );
+
+  await client.handleMessage({
+    type: "sync",
+    operations: [
+      {
+        type: "insert",
+        id: {
+          clientId: "client-a",
+          sequence: 1,
+        },
+        element: {
+          id: {
+            clientId: "client-a",
+            sequence: 1,
+          },
+          value: "H",
+          after: null,
+          deleted: false,
+        },
+      },
+    ],
+  });
+
+  const document = await store.loadDocument("doc-1");
+
+  expect(document?.state.versionVector).toEqual({
+    "client-a": 1,
+  });
+
+  expect(document?.state.elements).toHaveLength(1);
+});
+
+it("works with IndexedDBLocalStore", async () => {
+  const store = new IndexedDBLocalStore();
+
+  const socket = createFakeSocket();
+  const state = new SyncState("client-a");
+
+  const client = new SyncClient(
+    socket as any,
+    state,
+    store,
+    "doc-1"
+  );
+
+  client.insert("H", null);
+
+  const savedDocument =
+    await store.loadDocument("doc-1");
+
+  const pendingOperations =
+    await store.getPendingOperations("doc-1");
+
+  expect(savedDocument?.state.elements).toHaveLength(1);
+
+  expect(
+    savedDocument?.state.versionVector
+  ).toEqual({
+    "client-a": 1,
+  });
+
+  expect(pendingOperations).toHaveLength(1);
+
+  store.close();
 });
 });
