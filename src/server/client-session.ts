@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Operation } from "../crdt/type";
+import type { Operation, ElementId } from "../crdt/type";
 
 export class ClientSession {
   public readonly sessionId: string;
@@ -15,25 +15,21 @@ export class ClientSession {
     this.clientId = clientId ?? randomUUID();
   }
 
-  validateOperationIdentity(operation: Operation): boolean {
-    if (operation.id.clientId !== this.clientId) {
-      return false;
-    }
-
-    const sequence = operation.id.sequence;
-
-    if (!Number.isInteger(sequence) || sequence <= 0) {
-      return false;
-    }
-
-    if (sequence <= this.lastSequence) {
-      return false;
-    }
-
-    this.lastSequence = sequence;
-
-    return true;
+  validateOperationIdentity(operationId: ElementId): boolean {
+  if (operationId.clientId !== this.clientId) {
+    return false;
   }
+
+  const sequence = operationId.sequence;
+
+  if (sequence <= this.lastSequence) {
+    return false;
+  }
+
+  this.lastSequence = sequence;
+
+  return true;
+}
 
   getLastSequence(): number {
     return this.lastSequence;

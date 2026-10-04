@@ -1,8 +1,12 @@
 import { WebSocket } from "ws";
 import { RGA } from "../crdt/rga";
-import type { Operation } from "../crdt/type";
+import type { Operation, ElementId } from "../crdt/type";
 import type { OperationStore } from "./operation-store";
 import type { DocumentStore } from "./document-store";
+import { DocumentSession } from "../document/document-session";
+import type { DocumentStateSnapshot } from "../document/document-state-snapshot";
+import type { DocumentOperation } from "../document/operations";
+import type { DocumentOperationStore, StoredDocumentOperation } from "./document-operation-store";
 
 export class Room {
   private clients = new Set<WebSocket>();
@@ -16,6 +20,8 @@ export class Room {
     private readonly rga: RGA,
     private readonly operationStore: OperationStore,
     private readonly documentStore: DocumentStore,
+    private readonly documentSession: DocumentSession,
+    private readonly documentOperationStore: DocumentOperationStore
   ) { }
 
   private async createSnapshot(): Promise<void> {
@@ -24,6 +30,14 @@ export class Room {
       state: this.rga.serialize(),
       version: this.currentVersion,
     });
+  }
+
+  private getDocumentOperationId(operation: DocumentOperation): ElementId {
+    if (operation.type === "insert_block" || operation.type === "delete_block") {
+      return operation.id;
+    }
+
+    return operation.operation.id;
   }
 
   addClient(socket: WebSocket): void {
@@ -60,14 +74,14 @@ export class Room {
   ): Promise<boolean> {
 
     const existingOperation =
-    await this.operationStore.getOperation(
-      this.documentId,
-      operation.id,
-    ) 
+      await this.operationStore.getOperation(
+        this.documentId,
+        operation.id,
+      )
 
-  if (existingOperation) {
-    return false
-  }
+    if (existingOperation) {
+      return false
+    }
     this.rga.apply(operation);
 
     const storedOperation = await this.operationStore.append(
@@ -90,14 +104,14 @@ export class Room {
   }
 
   async getOperations(): Promise<Operation[]> {
-  const storedOperations = await this.operationStore.getOperations(
-    this.documentId,
-  );
+    const storedOperations = await this.operationStore.getOperations(
+      this.documentId,
+    );
 
-  return storedOperations.map(
-    (storedOperation) => storedOperation.operation,
-  );
-}
+    return storedOperations.map(
+      (storedOperation) => storedOperation.operation,
+    );
+  }
 
   async restore(): Promise<void> {
     if (this.restored) {
@@ -137,12 +151,87 @@ export class Room {
     this.restored = true;
   }
 
-
   getText(): string {
     return this.rga.getText();
   }
 
   getVersionVector(): Record<string, number> {
-  return this.rga.serialize().versionVector;
+    return this.rga.serialize().versionVector;
+  }
+
+  applyDocumentOperation(
+    operation: DocumentOperation
+  ): void {
+    this.documentSession.applyOperation(operation);
+  }
+
+  getDocumentSnapshot(): DocumentStateSnapshot {
+    return this.documentSession.serialize();
+  }
+
+  broadcastDocumentOperation(
+    operation: DocumentOperation,
+    sender?: WebSocket
+  ): void {
+    const message = JSON.stringify({
+      type: "document_operation",
+      operation,
+    });
+
+    for (const client of this.clients) {
+
+      if (client === sender) {
+        continue;
+      }
+
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    }
+  }
+
+  async handleDocumentOperation(
+    operation: DocumentOperation,
+    sender?: WebSocket,
+  ): Promise<StoredDocumentOperation> {
+    // 1. Check whether operation already exists
+    const operationId = this.getDocumentOperationId(operation);
+
+    const existing =
+      await this.documentOperationStore.getOperation(
+        this.documentId,
+        operationId,
+      );
+
+    if (existing) {
+      return existing;
+    }
+
+    // 2. Apply to document state
+    this.documentSession.applyOperation(operation);
+
+    // 3. Persist
+    const stored =
+      await this.documentOperationStore.append(
+        this.documentId,
+        operation,
+      );
+
+    // 4. Broadcast
+    this.broadcastDocumentOperation(
+      operation,
+      sender,
+    );
+
+    return stored;
+  }
+
+  async getDocumentOperations(
+  afterVersion = 0,
+): Promise<StoredDocumentOperation[]> {
+  return this.documentOperationStore.getOperations(
+    this.documentId,
+    afterVersion,
+  );
 }
 }

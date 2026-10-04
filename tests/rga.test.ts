@@ -381,4 +381,49 @@ it("restores the version vector from a snapshot and later operations", async () 
   expect(restoredRoom.getVersionVector()).toEqual({
   "client-a": 2,
 });
+
+});
+
+it("returns elements in CRDT order", () => {
+  const rga = new RGA("client-a");
+
+  const first = rga.insert("A", null);
+
+  const second = rga.insert("B", first.id);
+
+  const third = rga.insert("C", second.id);
+
+  expect(
+    rga.getElements().map((element) => element.value)
+  ).toEqual(["A", "B", "C"]);
+});
+
+it("does not return deleted elements", () => {
+  const rga = new RGA("client-a");
+
+  const first = rga.insert("A", null);
+
+  rga.insert("B", first.id);
+
+  rga.delete(first.id);
+
+  expect(
+    rga.getElements().map((element) => element.value)
+  ).toEqual(["B"]);
+});
+
+it("returns children of deleted elements", () => {
+  const rga = new RGA("client-a");
+
+  const first = rga.insert("A", null);
+
+  const second = rga.insert("B", first.id);
+
+  rga.delete(first.id);
+
+  expect(
+    rga.getElements().map((element) => element.value)
+  ).toEqual(["B"]);
+
+  expect(second.element.after).toEqual(first.id);
 });

@@ -1,9 +1,10 @@
-import type { Operation } from "../crdt/type";
-import type { RGAState } from "../crdt/rga";
+import type { ElementId } from "../crdt/type";
+import type { DocumentOperation } from "../document/operations";
+import type { DocumentStateSnapshot } from "../document/document-state-snapshot";
 
 export type LocalDocument = {
   documentId: string;
-  state: RGAState
+  state: DocumentStateSnapshot;
 };
 
 export interface LocalStore {
@@ -13,16 +14,15 @@ export interface LocalStore {
 
   savePendingOperation(
     documentId: string,
-    operation: Operation
+    operation: DocumentOperation,
   ): Promise<void>;
 
   removePendingOperation(
     documentId: string,
-    operationId: {
-      clientId: string;
-      sequence: number;
-    }
+    operationId: ElementId,
   ): Promise<void>;
 
-  getPendingOperations(documentId: string): Promise<Operation[]>;
+  getPendingOperations(
+    documentId: string,
+  ): Promise<DocumentOperation[]>;
 }

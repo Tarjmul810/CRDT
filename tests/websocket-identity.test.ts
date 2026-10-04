@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { createServer } from "../src/server/create-server";
 import { MockAuthService } from "../src/server/mock-auth";
 import { DocumentAccessService } from "../src/server/document-access";
+import type { InsertBlockOperation } from "../src/document/operations";
 
 const authService = new MockAuthService();
 const accessService = new DocumentAccessService();
@@ -36,14 +37,14 @@ function connect(): Promise<WebSocket> {
   });
 }
 
-function nextMessage(socket: WebSocket): Promise<any> {
+function nextMessage(socket: WebSocket, timeoutMs = 3000): Promise<any> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
       reject(
         new Error("Timed out waiting for WebSocket message"),
       );
-    }, 3000);
+    }, timeoutMs);
 
     const onMessage = (data: WebSocket.RawData) => {
       cleanup();
@@ -127,7 +128,7 @@ function createInsertOperation(
   };
 }
 
-async function sendOperation(
+async function sendRgaOperation(
   socket: WebSocket,
   operation: ReturnType<typeof createInsertOperation>,
 ) {
@@ -140,6 +141,20 @@ async function sendOperation(
     }),
   );
 
+  return response;
+}
+
+async function sendBlockOperation(
+  socket: WebSocket,
+  operation: InsertBlockOperation,
+) {
+  const response = nextMessage(socket);
+  socket.send(
+    JSON.stringify({
+      type: "document_operation",
+      operation,
+    }),
+  ); console.log("sendBlockOperationResponse", response);
   return response;
 }
 
@@ -165,11 +180,16 @@ beforeAll(async () => {
     "user-1",
   );
 
+  authService.registerToken("token-a", "user-a");
+  authService.registerToken("token-b", "user-b");
+
   accessService.grantPermission(
     "doc-1",
     "user-1",
     "editor",
   );
+
+  accessService.grantPermission("identity-doc", "user-1", "editor");
 
   accessService.grantPermission(
     "sync-doc",
@@ -177,17 +197,29 @@ beforeAll(async () => {
     "editor",
   );
 
+  accessService.grantPermission("sync-doc", "user-b", "editor");
+  accessService.grantPermission("sync-doc", "user-a", "editor");
+
   accessService.grantPermission(
-  "partial-sync-doc",
-  "user-1",
-  "editor"
-);
+    "partial-sync-doc",
+    "user-1",
+    "editor"
+  );
 
   accessService.grantPermission(
     "retry-doc",
     "user-1",
     "editor",
   );
+
+  accessService.grantPermission("doc-1", "user-a", "owner");
+  accessService.grantPermission("doc-1", "user-b", "editor");
+
+  accessService.grantPermission("retry-doc", "user-a", "editor");
+  accessService.grantPermission("retry-doc", "user-b", "editor");
+
+  accessService.grantPermission("viewer-doc", "user-a", "viewer");
+  accessService.grantPermission("viewer-doc", "user-b", "viewer");
 
   server = createServer(
     0,
@@ -356,7 +388,7 @@ describe("WebSocket synchronization", () => {
 
 
       // Sender receives ACK.
-      const senderAck = await sendOperation(sender, operation);
+      const senderAck = await sendRgaOperation(sender, operation);
 
       expect(senderAck).toEqual({
         type: "operation_ack",
@@ -430,7 +462,7 @@ describe("WebSocket synchronization", () => {
 
       const liveMessagePromise = nextMessage(receiver);
 
-      const ack1 = await sendOperation(
+      const ack1 = await sendRgaOperation(
         sender,
         operation1,
       );
@@ -444,8 +476,8 @@ describe("WebSocket synchronization", () => {
       );
 
       const liveMessagePromise2 = nextMessage(receiver);
-      
-      const ack2 = await sendOperation(
+
+      const ack2 = await sendRgaOperation(
         sender,
         operation2,
       );
@@ -504,7 +536,7 @@ describe("WebSocket synchronization", () => {
 
       // First transmission.
       const firstAck =
-        await sendOperation(
+        await sendRgaOperation(
           socket,
           operation,
         );
@@ -516,12 +548,12 @@ describe("WebSocket synchronization", () => {
 
       // Retransmission of the exact same operation.
       const secondAck =
-        await sendOperation(
+        await sendRgaOperation(
           socket,
           operation,
         );
 
-        console.log("secondAck", secondAck);
+      console.log("secondAck", secondAck);
 
       expect(secondAck).toEqual({
         type: "operation_ack",
@@ -542,6 +574,421 @@ describe("WebSocket synchronization", () => {
       socket.close();
     }
   });
+
+  it("handles document operations, broadcasts them, and ACKs the sender", async () => {
+    const clientA = await connect();
+    const clientB = await connect();
+
+      // Authenticate both clients
+      await authenticate(
+        clientA,
+        "token-a",
+        "client-a",
+      );
+
+      await authenticate(
+        clientB,
+        "token-b",
+        "client-b",
+      );
+
+      // Join the same document
+      await joinDocument(clientA, "doc-1");
+      await joinDocument(clientB, "doc-1");
+
+      const operation = {
+        type: "insert_block" as const,
+        id: {
+          clientId: "client-a",
+          sequence: 1,
+        },
+        block: {
+          id: "block-1",
+          type: "paragraph" as const,
+        },
+        after: null,
+      };
+
+      // Start listening before sending the operation.
+      // Otherwise B could receive the message before
+      // nextMessage() starts waiting for it.
+      const liveMessagePromise = nextMessage(clientB);
+
+      // Send operation from A.
+      // This helper already waits for the sender's ACK.
+      const sendBlockOperationResponse =
+        await sendBlockOperation(
+          clientA,
+          operation,
+        );
+
+      // A should receive an ACK.
+      expect(sendBlockOperationResponse).toEqual({
+        type: "document_operation_ack",
+        operationId: operation.id,
+      });
+
+      // B should receive the actual document operation.
+      const liveMessage = await liveMessagePromise;
+
+      expect(liveMessage).toEqual({
+        type: "document_operation",
+        operation,
+      });
+
+      clientA.close();
+      clientB.close();
+  });
+
+  it("rejects document operations from a viewer", async () => {
+  const socket = await connect();
+
+  try {
+    await authenticate(
+      socket,
+      "token-a",
+    );
+
+    const joinMessage = await joinDocument(
+      socket,
+      "viewer-doc",
+    );
+
+    expect(joinMessage).toEqual({
+      type: "joined",
+      documentId: "viewer-doc",
+    });
+
+    const operation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: "viewer-client",
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    const response = await sendBlockOperation(
+      socket,
+      operation,
+    );
+
+    expect(response).toEqual({
+      type: "error",
+      message: "Write access denied",
+    });
+  } finally {
+    socket.close();
+  }
+});
+
+it("rejects a document operation with an invalid client identity", async () => {
+  const socket = await connect();
+
+  try {
+    await authenticate(
+      socket,
+      "user-1-token"
+    );
+
+    const joinMessage = await joinDocument(
+      socket,
+      "identity-doc",
+    );
+
+    expect(joinMessage).toEqual({
+      type: "joined",
+      documentId: "identity-doc",
+    });
+
+    const operation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: "client-b",
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    const response = await sendBlockOperation(
+      socket,
+      operation,
+    );
+
+    expect(response).toEqual({
+      type: "error",
+      message: "Invalid operation identity",
+    });
+  } finally {
+    socket.close();
+  }
+});
+
+it("rejects a document operation before joining a document", async () => {
+  const socket = await connect();
+
+  try {
+    const auth = await authenticate(
+      socket,
+      "user-1-token",
+    );
+
+    const operation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: auth.clientId,
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    const response = await sendBlockOperation(
+      socket,
+      operation,
+    );
+
+    expect(response).toEqual({
+      type: "error",
+      message: "Join a document first",
+    });
+  } finally {
+    socket.close();
+  }
+});
+
+it("rejects a new document operation with an invalid sequence", async () => {
+  const socket = await connect();
+
+  try {
+    const auth = await authenticate(
+      socket,
+      "user-1-token",
+    );
+
+    await joinDocument(
+      socket,
+      "identity-doc",
+    );
+
+    const firstOperation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: auth.clientId,
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    const firstResponse = await sendBlockOperation(
+      socket,
+      firstOperation,
+    );
+
+    expect(firstResponse).toEqual({
+      type: "document_operation_ack",
+      operationId: firstOperation.id,
+    });
+
+    const secondOperation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: auth.clientId,
+        sequence: 1,
+      },
+      block: {
+        id: "block-2",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    const secondResponse = await sendBlockOperation(
+      socket,
+      secondOperation,
+    );
+
+    expect(secondResponse).toEqual({
+      type: "document_operation_ack",
+      operationId: secondOperation.id,
+    });
+  } finally {
+    socket.close();
+  }
+});
+
+it("does not duplicate a retransmitted document operation", async () => {
+  const socketA = await connect();
+  const socketB = await connect();
+
+  try {
+    const authA = await authenticate(
+      socketA,
+      "token-a",
+    );
+
+    await authenticate(
+      socketB,
+      "token-b",
+    );
+
+    await joinDocument(
+      socketA,
+      "retry-doc",
+    );
+
+    await joinDocument(
+      socketB,
+      "retry-doc",
+    );
+
+    const operation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: authA.clientId,
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    // First transmission.
+    const firstBroadcastPromise =
+      nextMessage(socketB);
+
+    const firstAck =
+      await sendBlockOperation(
+        socketA,
+        operation,
+      );
+
+    expect(firstAck).toEqual({
+      type: "document_operation_ack",
+      operationId: operation.id,
+    });
+
+    expect(
+      await firstBroadcastPromise,
+    ).toEqual({
+      type: "document_operation",
+      operation,
+    });
+
+    // Second transmission of the exact same operation.
+    const secondAck =
+      await sendBlockOperation(
+        socketA,
+        operation,
+      );
+
+    expect(secondAck).toEqual({
+      type: "document_operation_ack",
+      operationId: operation.id,
+    });
+
+    // B must NOT receive the operation again.
+    await expect(
+      nextMessage(socketB, 100),
+    ).rejects.toThrow();
+  } finally {
+    socketA.close();
+    socketB.close();
+  }
+});
+
+it("syncs existing document operations", async () => {
+  const socketA = await connect();
+  const socketB = await connect();
+
+  try {
+    const authA = await authenticate(
+      socketA,
+      "token-a",
+    );
+
+    await authenticate(
+      socketB,
+      "token-b",
+    );
+
+    await joinDocument(
+      socketA,
+      "sync-doc",
+    );
+
+    await joinDocument(
+      socketB,
+      "sync-doc",
+    );
+
+    const operation = {
+      type: "insert_block" as const,
+      id: {
+        clientId: authA.clientId,
+        sequence: 1,
+      },
+      block: {
+        id: "block-1",
+        type: "paragraph" as const,
+      },
+      after: null,
+    };
+
+    // Persist the operation through the normal
+    // document-operation path.
+    const ack = await sendBlockOperation(
+      socketA,
+      operation,
+    );
+
+    expect(ack).toEqual({
+      type: "document_operation_ack",
+      operationId: operation.id,
+    });
+
+    // Request document sync from B.
+    socketB.send(
+      JSON.stringify({
+        type: "document_sync_request",
+        afterVersion: 0,
+      }),
+    );
+
+    const syncMessage =
+      await nextMessage(socketB);
+
+    expect(syncMessage).toEqual({
+      type: "document_sync",
+      operations: [
+        {
+          version: 1,
+          operation,
+        },
+      ],
+    });
+  } finally {
+    socketA.close();
+    socketB.close();
+  }
+});
 
 });
 

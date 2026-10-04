@@ -125,6 +125,7 @@ export class RGA {
         }
 
         element.deleted = true;
+        return { type: "delete",id: target, target: target };
     }
 
     apply(operation: Operation): Operation | void {
@@ -188,6 +189,45 @@ export class RGA {
         visit(null);
 
         return result.join("");
+    }
+
+    getElements(): Element[] {
+        const result: Element[] = [];
+
+        const visit = (after: ElementId | null): void => {
+            const children = Array.from(this.elements.values())
+                .filter((element) => {
+                    if (after === null) {
+                        return element.after === null;
+                    }
+
+                    return (
+                        element.after !== null &&
+                        this.idToString(element.after) ===
+                        this.idToString(after)
+                    );
+                })
+                .sort((a, b) =>
+                    this.idToString(a.id).localeCompare(
+                        this.idToString(b.id)
+                    )
+                );
+
+            for (const element of children) {
+                if (!element.deleted) {
+                    result.push(element);
+                }
+
+                // IMPORTANT:
+                // Even if this element is deleted,
+                // its children still need to be visited.
+                visit(element.id);
+            }
+        };
+
+        visit(null);
+
+        return result;
     }
 
     serialize(): RGAState {

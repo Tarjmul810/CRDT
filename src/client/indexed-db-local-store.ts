@@ -1,4 +1,5 @@
-import type { Operation } from "../crdt/type";
+import type { ElementId } from "../crdt/type";
+import type { DocumentOperation } from "../document/operations";
 import type { LocalDocument, LocalStore } from "./local-store";
 
 const DATABASE_NAME = "collaborative-workspace";
@@ -94,13 +95,9 @@ export class IndexedDBLocalStore implements LocalStore {
           "readonly"
         );
 
-        console.log("transaction", transaction.objectStore(DOCUMENTS_STORE).get(documentId));
-
         const request = transaction
           .objectStore(DOCUMENTS_STORE)
           .get(documentId);
-
-          console.log("request", request);
 
         request.onsuccess = () => {
           resolve(request.result ?? null);
@@ -115,7 +112,7 @@ export class IndexedDBLocalStore implements LocalStore {
 
   async savePendingOperation(
     documentId: string,
-    operation: Operation
+    operation: DocumentOperation
   ): Promise<void> {
     const db = await this.dbPromise;
 
@@ -125,12 +122,18 @@ export class IndexedDBLocalStore implements LocalStore {
         "readwrite"
       );
 
+      const id =
+        operation.type === "insert_block" ||
+          operation.type === "delete_block"
+          ? operation.id
+          : operation.operation.id;
+
       transaction
         .objectStore(PENDING_OPERATIONS_STORE)
         .put({
           documentId,
-          clientId: operation.id.clientId,
-          sequence: operation.id.sequence,
+          clientId: id.clientId,
+          sequence: id.sequence,
           operation,
         });
 
@@ -186,17 +189,17 @@ export class IndexedDBLocalStore implements LocalStore {
   }
 
   close(): void {
-  this.dbPromise.then((db) => {
-    db.close();
-  });
-}
+    this.dbPromise.then((db) => {
+      db.close();
+    });
+  }
 
   async getPendingOperations(
     documentId: string
-  ): Promise<Operation[]> {
+  ): Promise<DocumentOperation[]> {
     const db = await this.dbPromise;
 
-    return new Promise<Operation[]>(
+    return new Promise<DocumentOperation[]>(
       (resolve, reject) => {
         const transaction = db.transaction(
           PENDING_OPERATIONS_STORE,
@@ -214,7 +217,7 @@ export class IndexedDBLocalStore implements LocalStore {
             documentId: string;
             clientId: string;
             sequence: number;
-            operation: Operation;
+            operation: DocumentOperation;
           }>;
 
           const operations = records

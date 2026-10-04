@@ -5,6 +5,7 @@ import {
 
 import { RGA } from "../crdt/rga";
 import { Room } from "./room";
+import type { ElementId } from "../crdt/type";
 import { validateMessage } from "./validator";
 import { ClientSession } from "./client-session";
 import {
@@ -15,6 +16,9 @@ import { InMemoryOperationStore } from "./memory-operation-store";
 import { InMemoryDocumentStore } from "./memory-document-store";
 import { VersionVector } from "../crdt/version-vector";
 import { getMissingOperations } from "../crdt/sync";
+import { DocumentSession } from "../document/document-session";
+import type { DocumentOperation } from "../document/operations";
+import { InMemoryDocumentOperationStore } from "./memory-document-operation-store";
 
 export function createServer(port: number, authService: AuthService, accessService = new DocumentAccessService()) {
 
@@ -28,6 +32,8 @@ export function createServer(port: number, authService: AuthService, accessServi
 
   const operationStore = new InMemoryOperationStore();
   const documentStore = new InMemoryDocumentStore();
+  const documentSession = new DocumentSession("server");
+  const documentOperationStore = new InMemoryDocumentOperationStore();
 
   const authenticatedUsers = new Map<WebSocket, string>();
   const clientSessions = new Map<
@@ -43,7 +49,9 @@ export function createServer(port: number, authService: AuthService, accessServi
         documentId,
         new RGA("server"),
         operationStore,
-        documentStore
+        documentStore,
+        documentSession,
+        documentOperationStore
       );
 
       rooms.set(documentId, room);
@@ -219,6 +227,36 @@ export function createServer(port: number, authService: AuthService, accessServi
           return;
         }
 
+        if (rawMessage.type === "document_sync_request") {
+          const room = clientRooms.get(ws);
+
+          if (!room) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Join a document first",
+              }),
+            );
+            return;
+          }
+
+          const operations =
+            await room.getDocumentOperations(
+              rawMessage.afterVersion,
+            );
+
+            console.log("operations", operations);
+
+          ws.send(
+            JSON.stringify({
+              type: "document_sync",
+              operations,
+            }),
+          );
+
+          return;
+        }
+
         if (rawMessage.type === "operation") {
           const room = clientRooms.get(ws);
 
@@ -282,10 +320,8 @@ export function createServer(port: number, authService: AuthService, accessServi
 
           const isValidIdentity =
             session.validateOperationIdentity(
-              rawMessage.operation
+              rawMessage.operation.id
             );
-
-          console.log("isValidIdentity", isValidIdentity);
 
           if (!isValidIdentity) {
             ws.send(
@@ -310,6 +346,96 @@ export function createServer(port: number, authService: AuthService, accessServi
             }),
           );
           return
+        }
+
+        if (rawMessage.type === "document_operation") {
+          const operation = rawMessage.operation as DocumentOperation;
+          const room = clientRooms.get(ws);
+
+          if (!room) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Join a document first",
+              }),
+            );
+            return;
+          }
+
+          // 1. Check write access
+          const hasWriteAccess = accessService.canAccess(
+            room.documentId,
+            session.userId,
+            "write",
+          );
+
+          if (!hasWriteAccess) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Write access denied",
+              }),
+            );
+            return;
+          }
+
+          // 2. Get the CRDT operation identity
+          const operationId =
+            operation.type === "insert_block" ||
+              operation.type === "delete_block"
+              ? operation.id
+              : operation.operation.id as unknown as ElementId;
+
+          // 3. Verify that the operation belongs to this client
+          if (operationId.clientId !== session.clientId) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Invalid operation identity",
+              }),
+            );
+            return;
+          }
+
+          const existingOperation =
+            await documentOperationStore.getOperation(
+              room.documentId,
+              operationId,
+            );
+
+          if (existingOperation) {
+            ws.send(
+              JSON.stringify({
+                type: "document_operation_ack",
+                operationId,
+              }),
+            );
+            return;
+          }
+
+          // 4. Validate operation sequence
+          if (!session.validateOperationIdentity(operationId)) {
+            console.log("invalid operation identity");
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Invalid operation identity",
+              }),
+            );
+            return;
+          }
+
+          await room.handleDocumentOperation(operation, ws);
+
+          // 7. ACK sender
+          ws.send(
+            JSON.stringify({
+              type: "document_operation_ack",
+              operationId,
+            }),
+          );
+
+          return;
         }
       } catch {
         ws.send(

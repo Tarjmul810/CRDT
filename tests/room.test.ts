@@ -12,6 +12,9 @@ import { RGA } from "../src/crdt/rga";
 import { Room } from "../src/server/room";
 import { InMemoryOperationStore } from "../src/server/memory-operation-store";
 import { InMemoryDocumentStore } from "../src/server/memory-document-store";
+import { DocumentSession } from "../src/document/document-session";
+import type { DocumentOperation } from "../src/document/operations";
+import { InMemoryDocumentOperationStore } from "../src/server/memory-document-operation-store";
 
 function createSender(): WebSocket {
   return {
@@ -29,12 +32,17 @@ describe("Room", () => {
       new InMemoryDocumentStore();
 
     const rga = new RGA("client-1");
+    const documentSession = new DocumentSession("client-1");
+
+    const documentOperationStore = new InMemoryDocumentOperationStore();
 
     const room = new Room(
       "doc-1",
       rga,
       operationStore,
-      documentStore
+      documentStore,
+      documentSession,
+      documentOperationStore
     );
 
     const sender = createSender();
@@ -71,12 +79,17 @@ describe("Room", () => {
       new InMemoryDocumentStore();
 
     const rga = new RGA("client-1");
+    const documentSession = new DocumentSession("client-1");
+
+    const documentOperationStore = new InMemoryDocumentOperationStore();
 
     const room = new Room(
       "doc-1",
       rga,
       operationStore,
-      documentStore
+      documentStore,
+      documentSession,
+      documentOperationStore
     );
 
     const sender = createSender();
@@ -121,11 +134,17 @@ describe("Room", () => {
   const originalRga =
     new RGA("client-1");
 
+    const documentSession = new DocumentSession("client-1");
+
+    const documentOperationStore = new InMemoryDocumentOperationStore();
+
   const originalRoom = new Room(
     "doc-1",
     originalRga,
     operationStore,
-    documentStore
+    documentStore,
+    documentSession,
+    documentOperationStore
   );
 
   const sender = createSender();
@@ -164,11 +183,15 @@ describe("Room", () => {
   const restoredRga =
     new RGA("restored-client");
 
+    const documentSession1 = new DocumentSession("restored-client");
+
   const restoredRoom = new Room(
     "doc-1",
     restoredRga,
     operationStore,
-    documentStore
+    documentStore,
+    documentSession1,
+    documentOperationStore
   );
 
   await restoredRoom.restore();
@@ -188,11 +211,16 @@ it("restores only operations after the snapshot version", async () => {
   const originalRga =
     new RGA("client-1");
 
+    const documentSession = new DocumentSession("client-1");
+    const documentOperationStore = new InMemoryDocumentOperationStore();
+
   const room = new Room(
     "doc-1",
     originalRga,
     operationStore,
-    documentStore
+    documentStore,
+    documentSession,
+    documentOperationStore
   );
 
   const sender = createSender();
@@ -251,12 +279,16 @@ it("does not apply or broadcast a duplicate operation", async () => {
     new InMemoryDocumentStore();
 
   const rga = new RGA("server");
+  const documentSession = new DocumentSession("server");
+  const documentOperationStore = new InMemoryDocumentOperationStore();
 
   const room = new Room(
     "duplicate-doc",
     rga,
     operationStore,
     documentStore,
+    documentSession,
+    documentOperationStore
   );
 
   const sender = {
@@ -301,5 +333,354 @@ it("does not apply or broadcast a duplicate operation", async () => {
   expect(room.getText()).toBe("H");
 
   expect(receiver.send).toHaveBeenCalledTimes(1);
+});
+
+it("applies a document operation through the document session", () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore =
+    new InMemoryDocumentStore();
+
+    const documentSession = new DocumentSession("client-a");
+
+    const documentOperationStore = new InMemoryDocumentOperationStore();
+
+  const room = new Room(
+    "doc-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore
+  );
+
+  room.applyDocumentOperation({
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  });
+
+  const snapshot = room.getDocumentSnapshot();
+
+  expect(snapshot.blockList.elements).toHaveLength(1);
+
+  expect(snapshot.blockList.elements[0].value).toBe(
+  JSON.stringify({
+    id: "block-1",
+    type: "paragraph",
+  })
+);
+});
+
+it("broadcasts a document operation to other clients", () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore = new InMemoryDocumentStore();
+  const documentSession = new DocumentSession("client-a");
+  const documentOperationStore = new InMemoryDocumentOperationStore();
+  
+  const room = new Room(
+    "document-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore
+  );
+
+  const clientA = {
+    readyState: 1,
+    send: vi.fn(),
+  } as unknown as WebSocket;
+
+  const clientB = {
+    readyState: 1,
+    send: vi.fn(),
+  } as unknown as WebSocket;
+
+  // Use your existing Room client-registration method here.
+  room.addClient(clientA);
+  room.addClient(clientB);
+
+  const operation: DocumentOperation = {
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  };
+
+  room.broadcastDocumentOperation(
+    operation,
+    clientA
+  );
+
+  expect(clientA.send).not.toHaveBeenCalled();
+
+  expect(clientB.send).toHaveBeenCalledTimes(1);
+
+  expect(clientB.send).toHaveBeenCalledWith(
+    JSON.stringify({
+      type: "document_operation",
+      operation,
+    })
+  );
+});
+
+it("applies a document operation before broadcasting", () => {
+  const operationStore =
+    new InMemoryOperationStore();
+  const documentStore = new InMemoryDocumentStore();
+  const documentSession = new DocumentSession("client-a");
+  const documentOperationStore = new InMemoryDocumentOperationStore();
+  const room = new Room(
+    "document-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore
+  );
+
+  const operation: DocumentOperation = {
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  };
+
+  room.applyDocumentOperation(operation);
+
+  const snapshot = room.getDocumentSnapshot();
+
+  expect(snapshot.blockList.elements).toHaveLength(1);
+
+  expect(
+    JSON.parse(snapshot.blockList.elements[0].value)
+  ).toEqual({
+    id: "block-1",
+    type: "paragraph",
+  });
+});
+
+it("applies and persists a document operation", async () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore =
+    new InMemoryDocumentStore();
+
+  const documentSession =
+    new DocumentSession("client-a");
+
+  const documentOperationStore =
+    new InMemoryDocumentOperationStore();
+
+  const room = new Room(
+    "document-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore,
+  );
+
+  const operation: DocumentOperation = {
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  };
+
+  const stored =
+    await room.handleDocumentOperation(
+      operation,
+    );
+
+  expect(stored.version).toBe(1);
+  expect(stored.operation).toEqual(operation);
+
+  const operations =
+    await documentOperationStore.getOperations(
+      "document-1",
+    );
+
+  expect(operations).toHaveLength(1);
+  expect(operations[0]).toEqual(stored);
+
+  const snapshot =
+    room.getDocumentSnapshot();
+
+  expect(
+    snapshot.blockList.elements,
+  ).toHaveLength(1);
+});
+
+it("does not duplicate a retransmitted document operation", async () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore =
+    new InMemoryDocumentStore();
+
+  const documentSession =
+    new DocumentSession("client-a");
+
+  const documentOperationStore =
+    new InMemoryDocumentOperationStore();
+
+  const room = new Room(
+    "document-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore,
+  );
+
+  const operation: DocumentOperation = {
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  };
+
+  const first =
+    await room.handleDocumentOperation(
+      operation,
+    );
+
+  const second =
+    await room.handleDocumentOperation(
+      operation,
+    );
+
+  expect(first).toEqual(second);
+
+  const operations =
+    await documentOperationStore.getOperations(
+      "document-1",
+    );
+
+  expect(operations).toHaveLength(1);
+
+  const snapshot =
+    room.getDocumentSnapshot();
+
+  expect(
+    snapshot.blockList.elements,
+  ).toHaveLength(1);
+});
+
+it("handles a document text operation", async () => {
+  const operationStore =
+    new InMemoryOperationStore();
+
+  const documentStore =
+    new InMemoryDocumentStore();
+
+  const documentSession =
+    new DocumentSession("client-a");
+
+  const documentOperationStore =
+    new InMemoryDocumentOperationStore();
+
+  const room = new Room(
+    "document-1",
+    new RGA("client-a"),
+    operationStore,
+    documentStore,
+    documentSession,
+    documentOperationStore,
+  );
+
+  const blockOperation: DocumentOperation = {
+    type: "insert_block",
+    id: {
+      clientId: "client-a",
+      sequence: 1,
+    },
+    block: {
+      id: "block-1",
+      type: "paragraph",
+    },
+    after: null,
+  };
+
+  await room.handleDocumentOperation(
+    blockOperation,
+  );
+
+  const textOperation: DocumentOperation = {
+    type: "insert_text",
+    blockId: "block-1",
+    operation: {
+      type: "insert",
+      id: {
+        clientId: "client-a:block-1",
+        sequence: 1,
+      },
+      element: {
+        id: {
+          clientId: "client-a:block-1",
+          sequence: 1,
+        },
+        value: "Hello",
+        after: null,
+        deleted: false,
+      },
+    },
+  };
+
+  await room.handleDocumentOperation(
+    textOperation,
+  );
+
+  const content =
+    documentSession.state.getContent(
+      "block-1",
+    );
+
+  expect(content).toBeDefined();
+  expect(content?.getText()).toBe("Hello");
+
+  const operations =
+    await documentOperationStore.getOperations(
+      "document-1",
+    );
+
+  expect(operations).toHaveLength(2);
 });
 });

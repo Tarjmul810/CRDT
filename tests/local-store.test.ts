@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryLocalStore } from "./memory-local-store";
-import type { Operation } from "../crdt/type";
+import { InMemoryLocalStore } from "../src/client/memory-local-store";
+import type { Operation } from "../src/crdt/type";
+import type { DocumentOperation } from "../src/document/operations";
 
 describe("InMemoryLocalStore", () => {
   it("saves and loads a document", async () => {
@@ -9,10 +10,13 @@ describe("InMemoryLocalStore", () => {
     await store.saveDocument({
       documentId: "doc-1",
       state: {
-        elements: [],
-        versionVector: {
-          clientA: 2,
+        blockList: {
+          elements: [],
+          versionVector: {
+            clientA: 1,
+          },
         },
+        contents: [],
       },
     });
 
@@ -21,10 +25,13 @@ describe("InMemoryLocalStore", () => {
     expect(document).toEqual({
       documentId: "doc-1",
       state: {
-        elements: [],
-        versionVector: {
-          clientA: 2,
+        blockList: {
+          elements: [],
+          versionVector: {
+            clientA: 1,
+          },
         },
+        contents: [],
       },
     });
   });
@@ -40,39 +47,31 @@ describe("InMemoryLocalStore", () => {
   it("stores pending operations per document", async () => {
     const store = new InMemoryLocalStore();
 
-    const operationA: Operation = {
-      type: "insert",
+    const operationA: DocumentOperation = {
+      type: "insert_block",
       id: {
         clientId: "clientA",
         sequence: 1,
       },
-      element: {
-        id: {
-          clientId: "clientA",
-          sequence: 1,
-        },
-        value: "H",
-        after: null,
-        deleted: false,
+      block: {
+        id: "block-1",
+        type: "paragraph",
       },
+      after: null,
     };
 
-    const operationB: Operation = {
-      type: "insert",
+    const operationB: DocumentOperation = {
+      type: "insert_block",
       id: {
         clientId: "clientB",
         sequence: 1,
       },
-      element: {
-        id: {
-          clientId: "clientB",
-          sequence: 1,
-        },
-        value: "i",
-        after: null,
-        deleted: false,
+      block: {
+        id: "block-2",
+        type: "paragraph",
       },
-    };
+      after: null,
+    };  
 
     await store.savePendingOperation("doc-1", operationA);
     await store.savePendingOperation("doc-2", operationB);
@@ -89,21 +88,17 @@ describe("InMemoryLocalStore", () => {
   it("removes a pending operation", async () => {
     const store = new InMemoryLocalStore();
 
-    const operation: Operation = {
-      type: "insert",
+    const operation: DocumentOperation = {
+      type: "insert_block",
       id: {
         clientId: "clientA",
         sequence: 1,
       },
-      element: {
-        id: {
-          clientId: "clientA",
-          sequence: 1,
-        },
-        value: "H",
-        after: null,
-        deleted: false,
+      block: {
+        id: "block-1",
+        type: "paragraph",
       },
+      after: null,
     };
 
     await store.savePendingOperation("doc-1", operation);
@@ -121,21 +116,17 @@ describe("InMemoryLocalStore", () => {
   it("does not expose the stored pending operation array", async () => {
     const store = new InMemoryLocalStore();
 
-    const operation: Operation = {
-      type: "insert",
+    const operation: DocumentOperation = {
+      type: "insert_block",
       id: {
         clientId: "clientA",
         sequence: 1,
       },
-      element: {
-        id: {
-          clientId: "clientA",
-          sequence: 1,
-        },
-        value: "H",
-        after: null,
-        deleted: false,
+      block: {
+        id: "block-1",
+        type: "paragraph",
       },
+      after: null,
     };
 
     await store.savePendingOperation("doc-1", operation);
@@ -149,4 +140,5 @@ describe("InMemoryLocalStore", () => {
       await store.getPendingOperations("doc-1")
     ).toEqual([operation]);
   });
+  
 });

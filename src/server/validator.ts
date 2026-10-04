@@ -1,5 +1,6 @@
 import type { ClientMessage } from "./protocol";
 import type { Operation } from "../crdt/type";
+import type { DocumentOperation } from "../document/operations";
 
 function isValidElementId(value: unknown): boolean {
   if (typeof value !== "object" || value === null) {
@@ -108,6 +109,42 @@ function isValidOperation(
   return false;
 }
 
+function isValidDocumentOperation(
+  operation: unknown
+): operation is DocumentOperation {
+  if (typeof operation !== "object" || operation === null) {
+    return false;
+  }
+
+  const op = operation as Record<string, unknown>;
+
+  if (op.type !== "insert_block" && op.type !== "delete_block") {
+    return false;
+  }
+
+  if (!isValidElementId(op.id)) {
+    return false;
+  }
+
+  if (op.type === "insert_block") {
+    if (typeof op.block !== "object" || op.block === null) {
+      return false;
+    }
+
+    const block = op.block as Record<string, unknown>;
+
+    if ( block.id === undefined || (block.id as string).length === 0) {
+      return false;
+    }
+
+    if (block.type !== "paragraph") {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function isValidVersionVector(value: unknown): boolean {
   if (
     typeof value !== "object" ||
@@ -165,9 +202,21 @@ export function validateMessage(message: unknown): boolean {
     return isValidOperation(msg.operation);
   }
 
+  if (msg.type === "document_operation") {
+    return isValidDocumentOperation(msg.operation);
+  }
+
   if (msg.type === "sync") {
     return isValidVersionVector(msg.versionVector);
 
+  }
+
+  if (msg.type === "document_sync_request") {
+     return (
+        typeof msg.afterVersion === "number" &&
+        Number.isInteger(msg.afterVersion) &&
+        msg.afterVersion >= 0
+      );
   }
 
   return false;
