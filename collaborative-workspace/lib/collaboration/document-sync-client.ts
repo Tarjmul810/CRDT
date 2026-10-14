@@ -20,8 +20,30 @@ type DocumentSyncClientOptions = {
   session: DocumentSession;
 };
 
+export type PresenceUser = {
+  clientId: string;
+};
+
+export type RemoteCursor = {
+  clientId: string;
+  blockId: string;
+  offset: number;
+};
+
 export class DocumentSyncClient {
   private socket: WebSocket | null = null;
+
+  private presenceUsers: PresenceUser[] = [];
+
+  private readonly presenceListeners = new Set<
+    (users: PresenceUser[]) => void
+  >();
+
+  private readonly remoteCursors = new Map<string, RemoteCursor>();
+
+  private readonly cursorListeners = new Set<
+    (cursors: RemoteCursor[]) => void
+  >();
 
   private readonly url: string;
   private readonly token: string;
@@ -68,170 +90,214 @@ export class DocumentSyncClient {
     this.session = options.session;
   }
 
-  
+
   connect(): void {
-  if (
-    this.socket &&
-    (
-      this.socket.readyState === WebSocket.OPEN ||
-      this.socket.readyState === WebSocket.CONNECTING
-    )
-  ) {
-    return;
-  }
-
-  this.authenticated = false;
-  this.joined = false;
-  this.syncComplete = false;
-
-  const socket = new WebSocket(this.url);
-
-  this.socket = socket;
-
-  socket.onopen = () => {
-   
-    socket.send(
-      JSON.stringify({
-        type: "authenticate",
-        token: this.token,
-        clientId: this.clientId,
-      }),
-    );
-  };
-
-  socket.onmessage = (event) => {
-  
-    try {
-      const message = JSON.parse(event.data);
-
-      console.log("📨 PARSED MESSAGE:", message);
-
-      this.handleMessage(message);
-    } catch (error) {
-      console.error(
-        "❌ FAILED TO PARSE MESSAGE:",
-        this.clientId,
-        error,
-      );
-    }
-  };
-
-  socket.onerror = (error) => {
-    console.error(
-      "❌ SOCKET ERROR:",
-      this.clientId,
-      error,
-    );
-  };
-
-  socket.onclose = (event) => {
-
-    if (this.socket === socket) {
-      this.socket = null;
+    if (
+      this.socket &&
+      (
+        this.socket.readyState === WebSocket.OPEN ||
+        this.socket.readyState === WebSocket.CONNECTING
+      )
+    ) {
+      return;
     }
 
     this.authenticated = false;
     this.joined = false;
     this.syncComplete = false;
-  };
-}
 
-private handleMessage(
-  message: unknown,
-): void {
-  if (
-    typeof message !== "object" ||
-    message === null
-  ) {
-    return;
+    const socket = new WebSocket(this.url);
+
+    this.socket = socket;
+
+    socket.onopen = () => {
+
+      socket.send(
+        JSON.stringify({
+          type: "authenticate",
+          token: this.token,
+          clientId: this.clientId,
+        }),
+      );
+    };
+
+    socket.onmessage = (event) => {
+
+      try {
+        const message = JSON.parse(event.data);
+
+        console.log("📨 PARSED MESSAGE:", message);
+
+        this.handleMessage(message);
+      } catch (error) {
+        console.error(
+          "❌ FAILED TO PARSE MESSAGE:",
+          this.clientId,
+          error,
+        );
+      }
+    };
+
+    socket.onerror = (error) => {
+      console.error(
+        "❌ SOCKET ERROR:",
+        this.clientId,
+        error,
+      );
+    };
+
+    socket.onclose = (event) => {
+
+      if (this.socket === socket) {
+        this.socket = null;
+      }
+
+      this.authenticated = false;
+      this.joined = false;
+      this.syncComplete = false;
+      this.remoteCursors.clear();
+      this.notifyCursorListeners();
+    };
   }
 
-  const msg =
-    message as Record<string, unknown>;
+  private handleMessage(
+    message: unknown,
+  ): void {
+    if (
+      typeof message !== "object" ||
+      message === null
+    ) {
+      return;
+    }
 
-  if (msg.type === "authenticated") {
-    this.authenticated = true;
+    const msg =
+      message as Record<string, unknown>;
 
-    this.joinDocument();
+    if (msg.type === "authenticated") {
+      this.authenticated = true;
 
-    return;
-  }
+      this.joinDocument();
 
-  if (msg.type === "joined") {
-    this.joined = true;
+      return;
+    }
 
-    this.requestSync();
+    if (msg.type === "joined") {
+      this.joined = true;
 
-    return;
-  }
+      this.requestSync();
 
-  if (msg.type === "document_sync") {
+      return;
+    }
 
-    this.handleDocumentSync(
-      msg.operations as DocumentSyncOperation[],
-    );
+    if (msg.type === "presence_changed") {
+      const users = Array.isArray(msg.users)
+        ? msg.users.filter(
+          (user): user is PresenceUser =>
+            typeof user === "object" &&
+            user !== null &&
+            "clientId" in user &&
+            typeof user.clientId === "string",
+        )
+        : [];
 
-    this.syncComplete = true;
+      this.updatePresence(users);
 
-    this.flushPendingOperations();
+      return;
+    }
 
-    return;
-  }
+    if (msg.type === "cursor_changed") {
+      const cursor = msg.cursor as RemoteCursor | undefined;
 
-  if (msg.type === "document_operation") {
+      if (
+        cursor &&
+        typeof cursor.clientId === "string" &&
+        typeof cursor.blockId === "string" &&
+        Number.isSafeInteger(cursor.offset) &&
+        cursor.offset >= 0
+      ) {
+        this.remoteCursors.set(cursor.clientId, cursor);
+        this.notifyCursorListeners();
+      }
+
+      return;
+    }
+
+    if (msg.type === "cursor_removed") {
+      if (typeof msg.clientId === "string") {
+        this.remoteCursors.delete(msg.clientId);
+        this.notifyCursorListeners();
+      }
+
+      return;
+    }
+
+    if (msg.type === "document_sync") {
+
+      this.handleDocumentSync(
+        msg.operations as DocumentSyncOperation[],
+      );
+
+      this.syncComplete = true;
+
+      this.flushPendingOperations();
+
+      return;
+    }
+
+    if (msg.type === "document_operation") {
+      console.log(
+        "📥 REMOTE DOCUMENT OPERATION:",
+        this.clientId,
+        msg.operation,
+      );
+
+      this.handleRemoteOperation(
+        msg.operation as DocumentOperation,
+      );
+
+      return;
+    }
+
+    if (
+      msg.type === "document_operation_ack"
+    ) {
+      const operationId =
+        msg.operationId as ElementId;
+
+      console.log(
+        "✅ OPERATION ACK:",
+        this.clientId,
+        operationId,
+      );
+
+      const operationKey = this.findPendingOperationKey(
+        operationId,
+      );
+
+      this.pendingOperations.delete(
+        operationKey!,
+      );
+
+      return;
+    }
+
+    if (msg.type === "error") {
+      console.error(
+        "❌ SERVER ERROR:",
+        this.clientId,
+        msg.message,
+      );
+
+      return;
+    }
+
     console.log(
-      "📥 REMOTE DOCUMENT OPERATION:",
+      "⚠️ UNHANDLED WS MESSAGE:",
       this.clientId,
-      msg.operation,
+      msg,
     );
-
-    this.handleRemoteOperation(
-      msg.operation as DocumentOperation,
-    );
-
-    return;
   }
 
-  if (
-    msg.type === "document_operation_ack"
-  ) {
-    const operationId =
-      msg.operationId as ElementId;
-
-    console.log(
-      "✅ OPERATION ACK:",
-      this.clientId,
-      operationId,
-    );
-
-    const operationKey = this.findPendingOperationKey(
-      operationId,
-    );
-
-    this.pendingOperations.delete(
-      operationKey!,
-    );
-
-    return;
-  }
-
-  if (msg.type === "error") {
-    console.error(
-      "❌ SERVER ERROR:",
-      this.clientId,
-      msg.message,
-    );
-
-    return;
-  }
-
-  console.log(
-    "⚠️ UNHANDLED WS MESSAGE:",
-    this.clientId,
-    msg,
-  );
-}
- 
   private handleDocumentSync(
     operations: DocumentSyncOperation[],
   ): void {
@@ -296,45 +362,45 @@ private handleMessage(
   }
 
   private findPendingOperationKey(
-  operationId: ElementId,
-): string | null {
-  for (const [
-    operationKey,
-    operation,
-  ] of this.pendingOperations) {
-    if (
-      operation.id.clientId ===
+    operationId: ElementId,
+  ): string | null {
+    for (const [
+      operationKey,
+      operation,
+    ] of this.pendingOperations) {
+      if (
+        operation.id.clientId ===
         operationId.clientId &&
-      operation.id.sequence ===
+        operation.id.sequence ===
         operationId.sequence
-    ) {
-      return operationKey;
+      ) {
+        return operationKey;
+      }
     }
+
+    return null;
   }
 
-  return null;
-}
-
   private operationKey(
-  operation: DocumentOperation,
-): string {
-  const id = operation.id;
+    operation: DocumentOperation,
+  ): string {
+    const id = operation.id;
 
-  return [
-    operation.type,
-    "blockId" in operation
-      ? operation.blockId
-      : "",
-    id.clientId,
-    id.sequence,
-  ].join(":");
-}
+    return [
+      operation.type,
+      "blockId" in operation
+        ? operation.blockId
+        : "",
+      id.clientId,
+      id.sequence,
+    ].join(":");
+  }
 
   private joinDocument(): void {
     if (
       !this.socket ||
       this.socket.readyState !==
-        WebSocket.OPEN
+      WebSocket.OPEN
     ) {
       return;
     }
@@ -351,7 +417,7 @@ private handleMessage(
     if (
       !this.socket ||
       this.socket.readyState !==
-        WebSocket.OPEN
+      WebSocket.OPEN
     ) {
       return;
     }
@@ -408,7 +474,7 @@ private handleMessage(
     if (
       !this.socket ||
       this.socket.readyState !==
-        WebSocket.OPEN
+      WebSocket.OPEN
     ) {
       return;
     }
@@ -454,6 +520,74 @@ private handleMessage(
 
   getServerVersion(): number {
     return this.serverVersion;
+  }
+
+  getPresenceUsers(): PresenceUser[] {
+    return [...this.presenceUsers];
+  }
+
+  subscribePresence(
+    listener: (users: PresenceUser[]) => void,
+  ): () => void {
+    this.presenceListeners.add(listener);
+
+    // Immediately provide the current state.
+    listener(this.getPresenceUsers());
+
+    // Return an unsubscribe function.
+    return () => {
+      this.presenceListeners.delete(listener);
+    };
+  }
+
+  private updatePresence(users: PresenceUser[]): void {
+    this.presenceUsers = users;
+
+    for (const listener of this.presenceListeners) {
+      listener(this.getPresenceUsers());
+    }
+  }
+
+  getRemoteCursors(): RemoteCursor[] {
+    return [...this.remoteCursors.values()];
+  }
+
+  subscribeCursors(
+    listener: (cursors: RemoteCursor[]) => void,
+  ): () => void {
+    this.cursorListeners.add(listener);
+    listener(this.getRemoteCursors());
+
+    return () => {
+      this.cursorListeners.delete(listener);
+    };
+  }
+
+  private notifyCursorListeners(): void {
+    const cursors = this.getRemoteCursors();
+
+    for (const listener of this.cursorListeners) {
+      listener(cursors);
+    }
+  }
+
+  sendCursorUpdate(blockId: string, offset: number): void {
+    if (
+      !this.socket ||
+      this.socket.readyState !== WebSocket.OPEN ||
+      !this.authenticated ||
+      !this.joined
+    ) {
+      return;
+    }
+
+    this.socket.send(
+      JSON.stringify({
+        type: "cursor_update",
+        blockId,
+        offset,
+      }),
+    );
   }
 
   disconnect(): void {

@@ -8,8 +8,16 @@ import type { DocumentStateSnapshot } from "../document/document-state-snapshot"
 import type { DocumentOperation } from "../document/operations";
 import type { DocumentOperationStore, StoredDocumentOperation } from "./document-operation-store";
 
+type RemoteCursor = {
+  clientId: string;
+  blockId: string;
+  offset: number;
+};
+
 export class Room {
+  private cursors = new Map<string, RemoteCursor>();
   private clients = new Set<WebSocket>();
+  private clientIds = new Map<WebSocket, string>();
   private restored = false;
 
   private static readonly SNAPSHOT_INTERVAL = 100;
@@ -36,13 +44,81 @@ export class Room {
     return operation.id;
   }
 
-  addClient(socket: WebSocket): void {
-  this.clients.add(socket);
-}
+  updateCursor(
+    sender: WebSocket,
+    clientId: string,
+    blockId: string,
+    offset: number,
+  ): void {
+    const cursor: RemoteCursor = {
+      clientId,
+      blockId,
+      offset,
+    };
 
-removeClient(socket: WebSocket): void {
-  this.clients.delete(socket);
-}
+    this.cursors.set(clientId, cursor);
+
+    const message = JSON.stringify({
+      type: "cursor_changed",
+      cursor,
+    });
+
+    for (const client of this.clients) {
+      if (
+        client !== sender &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(message);
+      }
+    }
+  }
+
+  sendCurrentCursors(socket: WebSocket): void {
+    if (socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    for (const cursor of this.cursors.values()) {
+      socket.send(
+        JSON.stringify({
+          type: "cursor_changed",
+          cursor,
+        }),
+      );
+    }
+  }
+
+  addClient(socket: WebSocket): void {
+    this.clients.add(socket);
+  }
+
+  removeClient(socket: WebSocket): void {
+    const clientId = this.clientIds.get(socket);
+
+    if (!clientId) {
+      return;
+    }
+    this.clients.delete(socket);
+    this.clientIds.delete(socket);
+    this.broadcastCursors(clientId);
+    this.broadcastPresence();
+  }
+
+  broadcastCursors(clientId: string): void {
+    // Remove the cursor from the map.
+    this.cursors.delete(clientId);
+
+    const message = JSON.stringify({
+      type: "cursor_removed",
+      clientId,
+    });
+
+    for (const client of this.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    }
+  }
 
   broadcast(
     operation: Operation,
@@ -55,6 +131,34 @@ removeClient(socket: WebSocket): void {
 
     for (const client of this.clients) {
       if (client !== sender && client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    }
+  }
+
+  setClientIdentity(socket: WebSocket, clientId: string): void {
+    this.clientIds.set(socket, clientId);
+  }
+
+  getPresenceUsers(): { clientId: string }[] {
+    const users = new Map<string, { clientId: string }>();
+
+    for (const clientId of this.clientIds.values()) {
+      users.set(clientId, { clientId });
+    }
+
+    return [...users.values()];
+  }
+
+  broadcastPresence(): void {
+    const message = JSON.stringify({
+      type: "presence_changed",
+      documentId: this.documentId,
+      users: this.getPresenceUsers(),
+    });
+
+    for (const client of this.clients) {
+      if (client.readyState === WebSocket.OPEN) {
         client.send(message);
       }
     }
@@ -168,27 +272,27 @@ removeClient(socket: WebSocket): void {
   }
 
   broadcastDocumentOperation(
-  operation: DocumentOperation,
-  sender?: WebSocket,
-): void {
+    operation: DocumentOperation,
+    sender?: WebSocket,
+  ): void {
 
-  const message = JSON.stringify({
-    type: "document_operation",
-    operation,
-  });
+    const message = JSON.stringify({
+      type: "document_operation",
+      operation,
+    });
 
-  for (const client of this.clients) {
+    for (const client of this.clients) {
 
-    if (client === sender) {
-      continue;
-    }
+      if (client === sender) {
+        continue;
+      }
 
-    if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === WebSocket.OPEN) {
 
-      client.send(message);
+        client.send(message);
+      }
     }
   }
-}
 
   async handleDocumentOperation(
     operation: DocumentOperation,

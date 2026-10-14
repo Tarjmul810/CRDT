@@ -9,6 +9,7 @@ export type Block = {
   id: BlockId;
   type: BlockType;
   content?: string;
+  checked? : boolean;
 };
 
 export type Document = {

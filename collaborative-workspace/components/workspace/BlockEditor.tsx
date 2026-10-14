@@ -13,558 +13,350 @@ import type {
 
 import { useDocumentSessionContext } from "@/lib/collaboration/document-session-provider";
 import { useDocumentSession } from "@/lib/collaboration/use-document-session";
+import { useDocumentCursors } from "@/lib/collaboration/use-document-cursors";
+
+import BlockRow from "./BlockRow";
 
 export default function BlockEditor() {
-  const { session, syncClient } =
-    useDocumentSessionContext();
+  const {
+    session: contextSession,
+    syncClient,
+  } = useDocumentSessionContext();
 
-  const documentSession =
-    useDocumentSession(session);
+  const remoteCursors = useDocumentCursors(syncClient);
 
-  const blocks =
-    documentSession.getBlocks();
+  const session =
+    useDocumentSession(contextSession);
 
-  /**
-   * Keep references to the actual input elements.
-   *
-   * We use these to restore the cursor after React
-   * updates the controlled input value.
-   */
-  const inputRefs =
-    useRef<Record<string, HTMLInputElement | null>>(
-      {},
+  const blocks = session.getBlocks();
+
+  const inputRefs = useRef<
+    Record<string, HTMLInputElement | null>
+  >({});
+
+  function addBlockAfter(blockId: string) {
+    const currentBlocks =
+      session.getBlocks();
+
+    const index = currentBlocks.findIndex(
+      (block) => block.id === blockId,
     );
 
-  /**
-   * Restore the cursor without using useEffect.
-   */
-  function restoreCursor(
-    blockId: string,
-    position: number,
-  ) {
-    requestAnimationFrame(() => {
-      const input =
-        inputRefs.current[blockId];
+    if (index === -1) {
+      return;
+    }
 
-      if (!input) {
-        return;
-      }
+    const blockAfter =
+      currentBlocks[index];
 
-      input.focus();
-
-      input.setSelectionRange(
-        position,
-        position,
+    const elementId =
+      session.state.blocks.getElementId(
+        blockAfter.id,
       );
-    });
-  }
 
-  /**
-   * Add a new paragraph block after the
-   * current last block.
-   */
-  function addBlock() {
-    const currentBlocks =
-      documentSession.getBlocks();
+    if (!elementId) {
+      return;
+    }
 
     const newBlock: Block = {
       id: crypto.randomUUID(),
       type: "paragraph",
     };
 
-    let after: ElementId | null = null;
-
-    /**
-     * Empty document:
-     *
-     * Insert at the beginning of the block RGA.
-     */
-    if (currentBlocks.length === 0) {
-      after = null;
-    } else {
-      /**
-       * Non-empty document:
-       *
-       * Insert after the last visible block.
-       */
-      const lastBlock =
-        currentBlocks[
-          currentBlocks.length - 1
-        ];
-
-      const lastElement =
-        documentSession.state.blocks.getElementId(
-          lastBlock.id,
-        );
-
-      if (!lastElement) {
-        console.error(
-          "Could not find RGA element for last block",
-          lastBlock.id,
-        );
-
-        return;
-      }
-
-      after = lastElement;
-    }
-
-    console.log("CREATING BLOCK", {
-      block: newBlock,
-      after,
-    });
-
     const operation =
-      documentSession.insertBlock(
+      session.insertBlock(
         newBlock,
-        after,
+        elementId,
       );
-
-    console.log(
-      "INSERT BLOCK OPERATION",
-      operation,
-    );
 
     syncClient.sendLocalOperation(
       operation,
     );
-  }
 
-  /**
-   * Delete an entire block.
-   */
-  function deleteBlock(block: Block) {
-    console.log(
-      "DELETING BLOCK",
-      block.id,
-    );
-
-    const operation =
-      documentSession.deleteBlock(
-        block.id,
-      );
-
-    console.log(
-      "DELETE BLOCK OPERATION",
-      operation,
-    );
-
-    syncClient.sendLocalOperation(
-      operation,
-    );
-  }
-
-  /**
-   * Handle text changes.
-   *
-   * Instead of assuming that text was only appended,
-   * we compare the previous CRDT text with the new
-   * DOM value and determine:
-   *
-   *   - common prefix
-   *   - deleted range
-   *   - inserted range
-   *   - common suffix
-   *
-   * This allows editing in the middle of the text.
-   */
-  function handleTextChange(
-    event: ChangeEvent<HTMLInputElement>,
-    block: Block,
-  ) {
-    const input =
-      event.currentTarget;
-
-    const newValue =
-      input.value;
-
-    const oldValue =
-      documentSession.getText(
-        block.id,
-      );
-
-    const selectionStart =
-      input.selectionStart ?? newValue.length;
-
-    const selectionEnd =
-      input.selectionEnd ?? selectionStart;
-
-    console.log("TEXT CHANGE", {
-      blockId: block.id,
-      oldValue,
-      newValue,
-      selectionStart,
-      selectionEnd,
+    requestAnimationFrame(() => {
+      inputRefs.current[
+        newBlock.id
+      ]?.focus();
     });
+  }
 
-    /**
-     * Nothing changed.
-     */
-    if (oldValue === newValue) {
+  function deleteBlock(blockId: string) {
+    const currentBlocks =
+      session.getBlocks();
+
+    if (currentBlocks.length <= 1) {
       return;
     }
 
-    /**
-     * Find the longest common prefix.
-     *
-     * Example:
-     *
-     * old: "hello"
-     * new: "heXllo"
-     *
-     * prefix = "he"
-     */
-    let prefixLength = 0;
+    const index = currentBlocks.findIndex(
+      (block) => block.id === blockId,
+    );
 
-    while (
-      prefixLength < oldValue.length &&
-      prefixLength < newValue.length &&
-      oldValue[prefixLength] ===
-        newValue[prefixLength]
-    ) {
-      prefixLength++;
+    if (index === -1) {
+      return;
     }
 
-    /**
-     * Find the longest common suffix.
-     *
-     * We don't let it overlap the changed prefix.
-     */
-    let suffixLength = 0;
+    const focusBlock =
+      currentBlocks[index - 1] ??
+      currentBlocks[index + 1];
 
-    while (
-      suffixLength <
-        oldValue.length - prefixLength &&
-      suffixLength <
-        newValue.length - prefixLength &&
-      oldValue[
-        oldValue.length - 1 - suffixLength
-      ] ===
-        newValue[
-          newValue.length - 1 - suffixLength
-        ]
-    ) {
-      suffixLength++;
+    const operation =
+      session.deleteBlock(blockId);
+
+    syncClient.sendLocalOperation(
+      operation,
+    );
+
+    requestAnimationFrame(() => {
+      if (focusBlock) {
+        inputRefs.current[
+          focusBlock.id
+        ]?.focus();
+      }
+    });
+  }
+
+  function handleKeyDown(
+    event: KeyboardEvent<HTMLInputElement>,
+    block: Block,
+  ) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+
+      addBlockAfter(block.id);
+
+      return;
     }
 
-    /**
-     * The old text inside this range is being deleted.
-     */
-    const deletedLength =
-      oldValue.length -
-      prefixLength -
-      suffixLength;
+    if (
+      event.key === "Backspace" &&
+      event.currentTarget.selectionStart === 0 &&
+      session.getText(block.id).length === 0
+    ) {
+      event.preventDefault();
 
-    /**
-     * The new text inside this range is being inserted.
-     */
-    const insertedLength =
-      newValue.length -
-      prefixLength -
-      suffixLength;
+      deleteBlock(block.id);
+
+      return;
+    }
+  }
+
+  function handleChange(
+    event: ChangeEvent<HTMLInputElement>,
+    block: Block,
+  ) {
+    const input = event.currentTarget;
+    const newValue = input.value;
+    const oldValue = session.getText(
+      block.id,
+    );
+
+    if (newValue === oldValue) {
+      return;
+    }
+
+    const elements = session
+      .getTextElements(block.id)
+      .filter((element) => !element.deleted);
+
+    let start = 0;
+
+    while (
+      start < oldValue.length &&
+      start < newValue.length &&
+      oldValue[start] === newValue[start]
+    ) {
+      start++;
+    }
+
+    let oldEnd =
+      oldValue.length - 1;
+
+    let newEnd =
+      newValue.length - 1;
+
+    while (
+      oldEnd >= start &&
+      newEnd >= start &&
+      oldValue[oldEnd] ===
+      newValue[newEnd]
+    ) {
+      oldEnd--;
+      newEnd--;
+    }
+
+    const deletedCount =
+      oldEnd >= start
+        ? oldEnd - start + 1
+        : 0;
 
     const insertedText =
-      newValue.slice(
-        prefixLength,
-        prefixLength + insertedLength,
-      );
+      newEnd >= start
+        ? newValue.slice(
+          start,
+          newEnd + 1,
+        )
+        : "";
 
-    console.log("TEXT DIFF", {
-      prefixLength,
-      suffixLength,
-      deletedLength,
-      insertedLength,
-      insertedText,
-    });
+    const anchorElement =
+      elements[start - 1];
 
-    /**
-     * Get the currently visible CRDT elements.
-     *
-     * The order here corresponds to:
-     *
-     * oldValue[0]
-     * oldValue[1]
-     * oldValue[2]
-     * ...
-     */
-    const elements =
-      documentSession
-        .getTextElements(block.id)
-        .filter(
-          (element) =>
-            !element.deleted,
-        );
+    let after: ElementId | null =
+      anchorElement?.id ?? null;
 
-    /**
-     * --------------------------------------------------
-     * DELETE OLD TEXT
-     * --------------------------------------------------
-     *
-     * If:
-     *
-     * old = "hello"
-     * new = "helo"
-     *
-     * prefix = 3 ("hel")
-     * deleted range = old[3]
-     *
-     * We delete the corresponding CRDT element.
-     */
     for (
-      let index = 0;
-      index < deletedLength;
-      index++
+      let i = 0;
+      i < deletedCount;
+      i++
     ) {
-      const targetIndex =
-        prefixLength;
-
       const target =
-        elements[targetIndex];
+        elements[start + i];
 
       if (!target) {
-        console.error(
-          "Could not find CRDT element to delete",
-          {
-            blockId: block.id,
-            targetIndex,
-            elements,
-          },
-        );
-
         break;
       }
 
       const operation =
-        documentSession.deleteText(
+        session.deleteText(
           block.id,
           target.id,
         );
 
-      console.log(
-        "DELETE TEXT OPERATION",
-        operation,
-      );
-
       syncClient.sendLocalOperation(
         operation,
       );
-
-      /**
-       * Do not increment targetIndex here.
-       *
-       * After deleting an element, the next
-       * element shifts into the same visible
-       * position.
-       */
-      elements.splice(
-        targetIndex,
-        1,
-      );
     }
 
-    /**
-     * --------------------------------------------------
-     * INSERT NEW TEXT
-     * --------------------------------------------------
-     *
-     * The insertion point is immediately after
-     * the character before the changed region.
-     *
-     * Example:
-     *
-     * old = "hello"
-     * inserting "X" after "he":
-     *
-     *      h e | l l o
-     *          ↑
-     *        after = e
-     */
-    let after: ElementId | null =
-      null;
-
-    if (prefixLength > 0) {
-      const previousElement =
-        elements[prefixLength - 1];
-
-      if (previousElement) {
-        after =
-          previousElement.id;
-      }
-    }
-
-    /**
-     * Insert each character separately because
-     * your current BlockContent/RGA operates
-     * on individual inserted values.
-     */
-    for (
-      const character of insertedText
-    ) {
+    for (const character of insertedText) {
       const operation =
-        documentSession.insertText(
+        session.insertText(
           block.id,
           character,
           after,
         );
 
-      console.log(
-        "INSERT TEXT OPERATION",
+      syncClient.sendLocalOperation(
         operation,
       );
+
+      after = operation.id;
+    }
+
+    const cursorPosition =
+      input.selectionStart ??
+      newValue.length;
+
+    requestAnimationFrame(() => {
+      const element =
+        inputRefs.current[block.id];
+
+      if (!element) {
+        return;
+      }
+
+      element.focus();
+
+      element.setSelectionRange(
+        cursorPosition,
+        cursorPosition,
+      )
+      syncClient.sendCursorUpdate(block.id, cursorPosition);
+    });
+  }
+
+
+  function handleChangeType(
+    blockId: string,
+    type: Block["type"],
+  ) {
+    const currentBlock = session
+      .getBlocks()
+      .find((block) => block.id === blockId);
+
+    console.log(
+      "[BlockEditor] blocks being rendered:",
+      blocks.map((block) => ({
+        id: block.id,
+        type: block.type,
+      })),
+    );
+
+    if (!currentBlock || currentBlock.type === type) {
+      return;
+    }
+
+    const operation = session.updateBlockType(blockId, type);
+
+    syncClient.sendLocalOperation(operation);
+  }
+
+  function handleCursorChange(block: Block, offset: number) {
+    syncClient.sendCursorUpdate(block.id, offset);
+  }
+
+  function addLastBlock() {
+    const lastBlock =
+      blocks[blocks.length - 1];
+
+    if (!lastBlock) {
+      const newBlock: Block = {
+        id: crypto.randomUUID(),
+        type: "paragraph",
+      };
+
+      const operation =
+        session.insertBlock(
+          newBlock,
+          null,
+        );
 
       syncClient.sendLocalOperation(
         operation,
       );
 
-      /**
-       * The next character must be inserted
-       * after the character we just created.
-       */
-      after = operation.id;
-    }
+      requestAnimationFrame(() => {
+        inputRefs.current[
+          newBlock.id
+        ]?.focus();
+      });
 
-    /**
-     * --------------------------------------------------
-     * RESTORE CURSOR
-     * --------------------------------------------------
-     *
-     * For a normal edit, the cursor should end
-     * immediately after the inserted text.
-     *
-     * Example:
-     *
-     * hello
-     *   ↑
-     *
-     * type X
-     *
-     * heXllo
-     *    ↑
-     */
-    const newCursorPosition =
-      prefixLength +
-      insertedLength;
-
-    restoreCursor(
-      block.id,
-      newCursorPosition,
-    );
-  }
-
-  /**
-   * Handle keyboard-specific block behavior.
-   *
-   * Normal text deletion is handled through
-   * handleTextChange().
-   *
-   * This handler is mainly for deleting an
-   * empty block.
-   */
-  function handleKeyDown(
-    event: KeyboardEvent<HTMLInputElement>,
-    block: Block,
-  ) {
-    if (event.key !== "Backspace") {
       return;
     }
 
-    const input =
-      event.currentTarget;
-
-    const cursorPosition =
-      input.selectionStart ?? 0;
-
-    const selectionEnd =
-      input.selectionEnd ?? cursorPosition;
-
-    /**
-     * If there is selected text, let the normal
-     * input change handler process the deletion.
-     */
-    if (
-      cursorPosition !== selectionEnd
-    ) {
-      return;
-    }
-
-    const text =
-      documentSession.getText(
-        block.id,
-      );
-
-    /**
-     * Empty block + Backspace
-     * → delete entire block.
-     */
-    if (
-      text.length === 0 &&
-      cursorPosition === 0
-    ) {
-      event.preventDefault();
-
-      deleteBlock(block);
-    }
+    addBlockAfter(lastBlock.id);
   }
 
   return (
-    <div className="space-y-4">
-      {blocks.map((block) => {
-        const text =
-          documentSession.getText(
-            block.id,
-          );
-
-        return (
-          <div
-            key={block.id}
-            className="flex items-center gap-3"
-          >
-            <span className="w-20 shrink-0 text-xs text-zinc-600">
-              {block.type}
-            </span>
-
-            <input
-              ref={(element) => {
-                inputRefs.current[
-                  block.id
-                ] = element;
-              }}
-              value={text}
-              onChange={(event) =>
-                handleTextChange(
-                  event,
-                  block,
-                )
-              }
-              onKeyDown={(event) =>
-                handleKeyDown(
-                  event,
-                  block,
-                )
-              }
-              placeholder="Type here..."
-              className="w-full bg-transparent text-zinc-200 outline-none placeholder:text-zinc-700"
-            />
-
-            <button
-              type="button"
-              onClick={() =>
-                deleteBlock(block)
-              }
-              className="shrink-0 text-xs text-zinc-700 hover:text-red-400"
-            >
-              Delete
-            </button>
-          </div>
-        );
-      })}
+    <div className="space-y-1">
+      {blocks.map((block) => (
+        <BlockRow
+          key={block.id}
+          block={block}
+          value={session.getText(block.id)}
+          inputRef={(element) => {
+            inputRefs.current[block.id] =
+              element;
+          }}
+          onChangeAction={handleChange}
+          onChangeTypeAction={handleChangeType}
+          onKeyDownAction={handleKeyDown}
+          onCursorChangeAction={handleCursorChange}
+          remoteCursors={remoteCursors.filter(
+            (cursor) => cursor.blockId === block.id,
+          )}
+        />
+      ))}
 
       <button
         type="button"
-        onClick={addBlock}
-        className="rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+        onClick={addLastBlock}
+        className="mt-6 flex items-center gap-2 text-sm text-zinc-600 transition hover:text-zinc-300"
       >
-        + Add block
+        <span className="text-base">
+          +
+        </span>
+
+        <span>Add a block</span>
       </button>
     </div>
   );

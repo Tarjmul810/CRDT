@@ -181,13 +181,53 @@ export function createServer(port: number, authService: AuthService, accessServi
           );
 
           room.addClient(ws);
+          room.setClientIdentity(ws, session.clientId);
           clientRooms.set(ws, room);
+
+          room.broadcastPresence();
+          room.sendCurrentCursors(ws);
 
           ws.send(
             JSON.stringify({
               type: "joined",
               documentId: rawMessage.documentId,
             })
+          );
+
+          return;
+        }
+
+        if (rawMessage.type === "cursor_update") {
+          const room = clientRooms.get(ws);
+
+          if (!room || !session) {
+            ws.send(JSON.stringify({
+              type: "error",
+              message: "Join a document first",
+            }));
+            return;
+          }
+
+          const { blockId, offset } = rawMessage;
+
+          if (
+            typeof blockId !== "string" ||
+            blockId.length === 0 ||
+            !Number.isSafeInteger(offset) ||
+            offset < 0
+          ) {
+            ws.send(JSON.stringify({
+              type: "error",
+              message: "Invalid cursor position",
+            }));
+            return;
+          }
+
+          room.updateCursor(
+            ws,
+            session.clientId,
+            blockId,
+            offset,
           );
 
           return;

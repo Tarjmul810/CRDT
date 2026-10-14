@@ -68,8 +68,6 @@ export class DocumentState {
       `${this.clientId}`,
     );
 
-    console.log("Creating block content", blockId);
-
     this.contents.set(
       blockId,
       content,
@@ -153,8 +151,6 @@ export class DocumentState {
         operation.blockId,
       )
 
-      console.log("Insert block", operation);
-
       this.flushPendingOperations();
       return;
     }
@@ -181,14 +177,7 @@ export class DocumentState {
       const content =
         this.contents.get(
           operation.blockId,
-        );
-
-         console.log("TEXT CONTENT", {
-    blockId: operation.blockId,
-    exists: !!content,
-    before: content?.getText(),
-    operation: operation.operation,
-  });
+        )
 
       if (!content) {
         this.pendingOperations.push(
@@ -203,11 +192,6 @@ export class DocumentState {
       content.applyOperation(
         operation.operation,
       );
-
-      console.log(
-    "AFTER TEXT",
-    content.getText(),
-  );
 
       return;
     }
@@ -235,6 +219,11 @@ export class DocumentState {
 
       return;
     }
+
+    if (operation.type === "update_block") {
+      this.blocks.applyDocumentOperation(operation);
+      return;
+    }
   }
 
   private flushPendingOperations(): void {
@@ -254,9 +243,9 @@ export class DocumentState {
       ) {
         if (
           operation.type ===
-            "insert_text" ||
+          "insert_text" ||
           operation.type ===
-            "delete_text"
+          "delete_text"
         ) {
           const content =
             this.contents.get(
@@ -350,36 +339,38 @@ export class DocumentState {
     };
   }
 
+  updateBlockType(
+    blockId: string,
+    blockType: Block["type"],
+  ): DocumentOperation {
+    return this.blocks.updateBlockType(blockId, blockType);
+  }
+
   serialize(): DocumentStateSnapshot {
     return {
       blockList:
         this.blocks.serialize(),
-
-      contents:
-        Array.from(
-          this.contents.entries(),
-        ).map(
-          ([blockId, content]) => ({
-            blockId,
-            state:
-              content.serialize(),
-          }),
-        ),
+      contents: Array.from(this.contents.entries()).map(
+        ([blockId, content]) => ({
+          blockId,
+          state: content.serialize(),
+        }),
+      ),
     };
   }
 
   restore(
     snapshot: DocumentStateSnapshot,
   ): void {
-    this.blocks.restore(
-      snapshot.blockList,
-    );
+    this.blocks.restore(snapshot.blockList);
+
+
 
     this.contents.clear();
 
     for (
       const contentSnapshot of
-        snapshot.contents
+      snapshot.contents
     ) {
       const content =
         this.createContent(

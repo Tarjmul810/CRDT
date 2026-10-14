@@ -57,8 +57,28 @@ export type DeleteTextOperation = {
   operation: DeleteOperation;
 };
 
+export type UpdateBlockOperation = {
+  type: "update_block";
+  id: ElementId;
+  blockId: string;
+  blockType: | "paragraph"
+  | "heading"
+  | "todo";
+  timestamp: number;
+};
+
+export type SetTodoCheckedOperation = {
+  type: "set_todo_checked";
+  id: ElementId;
+  blockId: string;
+  checked: boolean;
+  timestamp: number;
+};
+
 export type DocumentOperation =
   | InsertBlockOperation
   | DeleteBlockOperation
   | InsertTextOperation
-  | DeleteTextOperation;
+  | DeleteTextOperation
+  | UpdateBlockOperation
+  | SetTodoCheckedOperation;

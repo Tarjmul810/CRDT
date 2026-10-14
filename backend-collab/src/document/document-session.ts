@@ -2,7 +2,7 @@ import { DocumentState } from "./document-state";
 import type { ElementId, Element } from "../crdt/type";
 import type { DocumentOperation } from "./operations";
 import type { DocumentStateSnapshot } from "./document-state-snapshot";
-import type { Block } from "./types";
+import type { Block, BlockType } from "./types";
 
 type DocumentListener = () => void;
 
@@ -33,10 +33,31 @@ export class DocumentSession {
     return this.version;
   }
 
+  updateBlockType(
+  blockId: string,
+  blockType: BlockType,
+): DocumentOperation {
+  const operation = this.state.updateBlockType(
+    blockId,
+    blockType,
+  );
+
+  console.log(
+  "[updateBlockType] blocks after update:",
+  this.state.getBlocks(),
+);
+
+  this.notifyListeners();
+
+  return operation;
+}
+
   applyOperation(operation: DocumentOperation): void {
     this.state.applyDocumentOperation(operation);
     this.notifyListeners();
   }
+
+  
 
   subscribe(listener: DocumentListener): () => void {
     this.listeners.add(listener);

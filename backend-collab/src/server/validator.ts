@@ -269,6 +269,36 @@ function isValidDocumentOperation(
     return true;
   }
 
+  if (op.type === "update_block") {
+  if (!isValidElementId(op.id)) {
+    return false;
+  }
+
+  if (
+    typeof op.blockId !== "string" ||
+    op.blockId.length === 0
+  ) {
+    return false;
+  }
+
+  if (
+  !Number.isSafeInteger(op.timestamp) ||
+  Number(op.timestamp) < 0
+) {
+  return false;
+}
+
+  if (
+    op.blockType !== "paragraph" &&
+    op.blockType !== "heading" &&
+    op.blockType !== "todo"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
   return false;
 }
 
@@ -345,6 +375,17 @@ export function validateMessage(message: unknown): boolean {
         msg.afterVersion >= 0
       );
   }
+
+  
+if (msg.type === "cursor_update") {
+  return (
+    typeof msg.blockId === "string" &&
+    msg.blockId.length > 0 &&
+    Number.isSafeInteger(msg.offset) &&
+    Number(msg.offset) >= 0
+  );
+}
+
 
   return false;
 }

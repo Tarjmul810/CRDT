@@ -1,4 +1,6 @@
+
 import type { RGAState } from "../crdt/rga";
+import type { BlockListState } from "./block-list";
 
 export type BlockContentSnapshot = {
   blockId: string;
@@ -6,6 +8,6 @@ export type BlockContentSnapshot = {
 };
 
 export type DocumentStateSnapshot = {
-  blockList: RGAState;
+  blockList: BlockListState;
   contents: BlockContentSnapshot[];
 };

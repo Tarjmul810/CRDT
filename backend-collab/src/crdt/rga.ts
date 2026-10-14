@@ -278,4 +278,17 @@ export class RGA {
             state.versionVector
         );
     }
+
+    createOperationId(): ElementId {
+  const sequence = this.versionVector.increment(this.clientId);
+
+  return {
+    clientId: this.clientId,
+    sequence,
+  };
+}
+
+observeOperationId(id: ElementId): void {
+  this.versionVector.update(id.clientId, id.sequence);
+}
 }
